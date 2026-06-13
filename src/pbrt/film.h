@@ -528,7 +528,7 @@ class SpectralFilm : public FilmBase {
 };
 
 // Only works with GradientIntegrator
-// Writes result to EXR files in 5*3 channels
+// Writes result to EXR files in 3*3 channels (RGB for the image, and image gradients in X/Y directions)
 class GradientBufferFilm : public FilmBase {
   public:
     struct SampledGradient {
