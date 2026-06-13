@@ -1113,7 +1113,7 @@ Image GradientBufferFilm::GetImage(ImageMetadata *metadata, Float) {
                            : (normalized_rgb(pixels[p].gy1) +
                               normalized_rgb(pixels[p + Point2i(0, 1)].gy0))};
 
-        auto transform_and_clamp = [this, &nClamped](RGB rgb) {
+        auto transform_and_clamp = [this, &nClamped](RGB &rgb) {
             rgb = outputRGBFromSensorRGB * rgb;
             if (std::max({rgb.r, rgb.g, rgb.b}) > 65504) {
                 if (rgb.r > 65504)
@@ -1132,7 +1132,7 @@ Image GradientBufferFilm::GetImage(ImageMetadata *metadata, Float) {
         Point2i pOffset(p.x - pixelBounds.pMin.x, p.y - pixelBounds.pMin.y);
         image.SetChannels(pOffset, rgbDesc, {rgb[0], rgb[1], rgb[2]});
         image.SetChannels(pOffset, gxDesc, {gx[0], gx[1], gx[2]});
-        image.SetChannels(pOffset, gyDesc, {gy[0], gy[1], gx[2]});
+        image.SetChannels(pOffset, gyDesc, {gy[0], gy[1], gy[2]});
     });
 
     if (nClamped.load() > 0)
@@ -1157,6 +1157,10 @@ GradientBufferFilm *GradientBufferFilm::Create(const ParameterDictionary &parame
     PixelSensor *sensor =
         PixelSensor::Create(parameters, colorSpace, exposureTime, loc, alloc);
     FilmBaseParameters filmBaseParameters(parameters, filter, sensor, loc);
+
+    if (!HasExtension(filmBaseParameters.filename, "exr"))
+        ErrorExit(loc, "%s: EXR is the only format supported by the GradientBufferFilm.",
+                  filmBaseParameters.filename);
 
     return alloc.new_object<GradientBufferFilm>(filmBaseParameters, colorSpace, alloc);
 }
