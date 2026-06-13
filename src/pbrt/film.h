@@ -527,6 +527,95 @@ class SpectralFilm : public FilmBase {
     SquareMatrix<3> outputRGBFromSensorRGB;
 };
 
+// Only works with GradientIntegrator
+// Writes result to EXR files in 5*3 channels
+class GradientBufferFilm : public FilmBase {
+  public:
+    struct SampledGradient {
+        Point2i pFilm;
+        SampledWavelengths lambda;
+        SampledSpectrum Lf, Lgx0, Lgx1, Lgy0, Lgy1;
+        Float wf, wgx0, wgx1, wgy0, wgy1;
+    };
+
+    bool UsesVisibleSurface() const { return false; }
+
+    void AddSample(Point2i, SampledSpectrum, const SampledWavelengths &,
+                   const VisibleSurface *, Float) {
+        assert(false && "GradientBufferFilm::AddSample called");
+    }
+
+    void AddGradientSample(const SampledGradient &sample) {
+        const SampledWavelengths &lambda = sample.lambda;
+        auto accum_sample = [this, &lambda](const SampledSpectrum &L, Float weight,
+                                            PixelChannel &pixel) {
+            RGB rgb = sensor->ToSensorRGB(L, lambda);
+            Float m = std::max({rgb.r, rgb.g, rgb.b});
+            for (int c = 0; c < 3; ++c)
+                pixel.rgbSum[c] += weight * rgb[c];
+            pixel.weightSum += weight;
+        };
+
+        DCHECK(InsideExclusive(sample.pFilm, pixelBounds));
+        Pixel pixel = pixels[sample.pFilm];
+        accum_sample(sample.Lf, sample.wf, pixel.f);
+        accum_sample(sample.Lgx0, sample.wgx0, pixel.gx0);
+        accum_sample(sample.Lgx1, sample.wgx1, pixel.gx1);
+        accum_sample(sample.Lgy0, sample.wgy0, pixel.gy0);
+        accum_sample(sample.Lgy1, sample.wgy1, pixel.gy1);
+    }
+
+    RGB GetPixelRGB(Point2i p, Float) const {
+        const PixelChannel &pixel = pixels[p].f;
+        RGB rgb(pixel.rgbSum[0], pixel.rgbSum[1], pixel.rgbSum[2]);
+        Float weightSum = pixel.weightSum;
+        if (weightSum != 0)
+            rgb /= weightSum;
+        rgb = outputRGBFromSensorRGB * rgb;
+        return rgb;
+    }
+
+    GradientBufferFilm(FilmBaseParameters p, const RGBColorSpace *colorSpace,
+                       Allocator alloc = {});
+
+    static GradientBufferFilm *Create(const ParameterDictionary &parameters,
+                                      Float exposureTime, Filter filter,
+                                      const RGBColorSpace *colorSpace, const FileLoc *loc,
+                                      Allocator alloc);
+
+    void AddSplat(Point2f, SampledSpectrum, const SampledWavelengths &) {
+        assert(false && "GradientBufferFilm::AddSplat called");
+    }
+
+    void WriteImage(ImageMetadata metadata, Float);
+    Image GetImage(ImageMetadata *metadata, Float);
+
+    std::string ToString() const;
+
+    RGB ToOutputRGB(SampledSpectrum L, const SampledWavelengths &lambda) const {
+        RGB sensorRGB = sensor->ToSensorRGB(L, lambda);
+        return outputRGBFromSensorRGB * sensorRGB;
+    }
+
+    void ResetPixel(Point2i p) { memset(&pixels[p], 0, sizeof(Pixel)); }
+
+  private:
+    struct PixelChannel {
+        PixelChannel() = default;
+        double rgbSum[3] = {0., 0., 0.};
+        double weightSum = 0.;
+    };
+    struct Pixel {
+        Pixel() = default;
+        PixelChannel f, gx0, gx1, gy0, gy1;
+    };
+
+    // RGBFilm Private Members
+    const RGBColorSpace *colorSpace;
+    SquareMatrix<3> outputRGBFromSensorRGB;
+    Array2D<Pixel> pixels;
+};
+
 PBRT_CPU_GPU
 inline SampledWavelengths Film::SampleWavelengths(Float u) const {
     auto sample = [&](auto ptr) { return ptr->SampleWavelengths(u); };

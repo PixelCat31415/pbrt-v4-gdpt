@@ -34,7 +34,8 @@
 
 namespace pbrt {
 
-PBRT_CPU_GPU void Film::AddSplat(Point2f p, SampledSpectrum v, const SampledWavelengths &lambda) {
+PBRT_CPU_GPU void Film::AddSplat(Point2f p, SampledSpectrum v,
+                                 const SampledWavelengths &lambda) {
     auto splat = [&](auto ptr) { return ptr->AddSplat(p, v, lambda); };
     return Dispatch(splat);
 }
@@ -188,8 +189,9 @@ std::string FilmBase::BaseToString() const {
 }
 
 // VisibleSurface Method Definitions
-PBRT_CPU_GPU VisibleSurface::VisibleSurface(const SurfaceInteraction &si, SampledSpectrum albedo,
-                               const SampledWavelengths &lambda)
+PBRT_CPU_GPU VisibleSurface::VisibleSurface(const SurfaceInteraction &si,
+                                            SampledSpectrum albedo,
+                                            const SampledWavelengths &lambda)
     : albedo(albedo) {
     set = true;
     // Initialize geometric _VisibleSurface_ members
@@ -496,7 +498,8 @@ RGBFilm::RGBFilm(FilmBaseParameters p, const RGBColorSpace *colorSpace,
     outputRGBFromSensorRGB = colorSpace->RGBFromXYZ * sensor->XYZFromSensorRGB;
 }
 
-PBRT_CPU_GPU void RGBFilm::AddSplat(Point2f p, SampledSpectrum L, const SampledWavelengths &lambda) {
+PBRT_CPU_GPU void RGBFilm::AddSplat(Point2f p, SampledSpectrum L,
+                                    const SampledWavelengths &lambda) {
     CHECK(!L.HasNaNs());
     // Convert sample radiance to _PixelSensor_ RGB
     RGB rgb = sensor->ToSensorRGB(L, lambda);
@@ -586,8 +589,9 @@ RGBFilm *RGBFilm::Create(const ParameterDictionary &parameters, Float exposureTi
 
 // GBufferFilm Method Definitions
 PBRT_CPU_GPU void GBufferFilm::AddSample(Point2i pFilm, SampledSpectrum L,
-                            const SampledWavelengths &lambda,
-                            const VisibleSurface *visibleSurface, Float weight) {
+                                         const SampledWavelengths &lambda,
+                                         const VisibleSurface *visibleSurface,
+                                         Float weight) {
     RGB rgb = sensor->ToSensorRGB(L, lambda);
     Float m = std::max({rgb.r, rgb.g, rgb.b});
     if (m > maxComponentValue)
@@ -657,7 +661,7 @@ GBufferFilm::GBufferFilm(FilmBaseParameters p, const AnimatedTransform &outputFr
 }
 
 PBRT_CPU_GPU void GBufferFilm::AddSplat(Point2f p, SampledSpectrum v,
-                           const SampledWavelengths &lambda) {
+                                        const SampledWavelengths &lambda) {
     // NOTE: same code as RGBFilm::AddSplat()...
     CHECK(!v.HasNaNs());
     RGB rgb = sensor->ToSensorRGB(v, lambda);
@@ -907,7 +911,7 @@ PBRT_CPU_GPU RGB SpectralFilm::GetPixelRGB(Point2i p, Float splatScale) const {
 }
 
 PBRT_CPU_GPU void SpectralFilm::AddSplat(Point2f p, SampledSpectrum L,
-                            const SampledWavelengths &lambda) {
+                                         const SampledWavelengths &lambda) {
     // This, too, is similar to RGBFilm::AddSplat(), with additions for
     // spectra.
 
@@ -1054,14 +1058,107 @@ SpectralFilm *SpectralFilm::Create(const ParameterDictionary &parameters,
         ErrorExit("Unfortunately pbrt must be recompiled to render wavelengths "
                   "beyond the [%f,%f] range ([%f,%f] was specified). Please "
                   "update Lambda_min and/or Lambda_max as necessary in "
-                  "src/pbrt/util/spectrum.h and recompile.", Lambda_min, Lambda_max,
-                  lambdaMin, lambdaMax);
+                  "src/pbrt/util/spectrum.h and recompile.",
+                  Lambda_min, Lambda_max, lambdaMin, lambdaMax);
 
     Float maxComponentValue = parameters.GetOneFloat("maxcomponentvalue", Infinity);
 
     return alloc.new_object<SpectralFilm>(filmBaseParameters, lambdaMin, lambdaMax,
                                           nBuckets, colorSpace, maxComponentValue,
                                           writeFP16, alloc);
+}
+
+GradientBufferFilm::GradientBufferFilm(FilmBaseParameters p,
+                                       const RGBColorSpace *colorSpace, Allocator alloc)
+    : FilmBase(p), pixels(p.pixelBounds, alloc), colorSpace(colorSpace) {
+    CHECK(!pixelBounds.IsEmpty());
+    CHECK(colorSpace);
+    filmPixelMemory += pixelBounds.Area() * sizeof(Pixel);
+    outputRGBFromSensorRGB = colorSpace->RGBFromXYZ * sensor->XYZFromSensorRGB;
+}
+
+void GradientBufferFilm::WriteImage(ImageMetadata metadata, Float) {
+    Image image = GetImage(&metadata, 0.f);
+    LOG_VERBOSE("Writing image %s with bounds %s", filename, pixelBounds);
+    image.Write(filename, metadata);
+}
+
+Image GradientBufferFilm::GetImage(ImageMetadata *metadata, Float) {
+    // Convert image to RGB and compute final pixel values
+    LOG_VERBOSE("Converting image to RGB and computing final weighted pixel values");
+    PixelFormat format = PixelFormat::Half;
+    Image image(format, Point2i(pixelBounds.Diagonal()),
+                {"R", "G", "B", "GX.R", "GX.G", "GX.B", "GY.R", "GY.G", "GY.B"});
+
+    ImageChannelDesc rgbDesc = image.GetChannelDesc({"R", "G", "B"});
+    ImageChannelDesc gxDesc = image.GetChannelDesc({"GX.R", "GX.G", "GX.B"});
+    ImageChannelDesc gyDesc = image.GetChannelDesc({"GY.R", "GY.G", "GY.B"});
+
+    std::atomic<int> nClamped{0};
+    ParallelFor2D(pixelBounds, [&](Point2i p) {
+        auto normalized_rgb = [](const PixelChannel &pixel) {
+            RGB rgb(pixel.rgbSum[0], pixel.rgbSum[1], pixel.rgbSum[2]);
+            if (pixel.weightSum != 0)
+                rgb /= pixel.weightSum;
+            return rgb;
+        };
+
+        bool is_x_border = (p.x == pixelBounds.pMax.x - 1);
+        bool is_y_border = (p.y == pixelBounds.pMax.y - 1);
+        RGB rgb{normalized_rgb(pixels[p].f)};
+        RGB gx{is_x_border ? RGB{}
+                           : (normalized_rgb(pixels[p].gx1) +
+                              normalized_rgb(pixels[p + Point2i(1, 0)].gx0))};
+        RGB gy{is_y_border ? RGB{}
+                           : (normalized_rgb(pixels[p].gy1) +
+                              normalized_rgb(pixels[p + Point2i(0, 1)].gy0))};
+
+        auto transform_and_clamp = [this, &nClamped](RGB rgb) {
+            rgb = outputRGBFromSensorRGB * rgb;
+            if (std::max({rgb.r, rgb.g, rgb.b}) > 65504) {
+                if (rgb.r > 65504)
+                    rgb.r = 65504;
+                if (rgb.g > 65504)
+                    rgb.g = 65504;
+                if (rgb.b > 65504)
+                    rgb.b = 65504;
+                ++nClamped;
+            }
+        };
+        transform_and_clamp(rgb);
+        transform_and_clamp(gx);
+        transform_and_clamp(gy);
+
+        Point2i pOffset(p.x - pixelBounds.pMin.x, p.y - pixelBounds.pMin.y);
+        image.SetChannels(pOffset, rgbDesc, {rgb[0], rgb[1], rgb[2]});
+        image.SetChannels(pOffset, gxDesc, {gx[0], gx[1], gx[2]});
+        image.SetChannels(pOffset, gyDesc, {gy[0], gy[1], gx[2]});
+    });
+
+    if (nClamped.load() > 0)
+        Warning("%d pixel values clamped to maximum fp16 value.", nClamped.load());
+
+    metadata->pixelBounds = pixelBounds;
+    metadata->fullResolution = fullResolution;
+    metadata->colorSpace = colorSpace;
+
+    return image;
+}
+
+std::string GradientBufferFilm::ToString() const {
+    return StringPrintf("[ GradientBufferFilm %s colorSpace: %s ]", BaseToString(),
+                        *colorSpace);
+}
+
+GradientBufferFilm *GradientBufferFilm::Create(const ParameterDictionary &parameters,
+                                               Float exposureTime, Filter filter,
+                                               const RGBColorSpace *colorSpace,
+                                               const FileLoc *loc, Allocator alloc) {
+    PixelSensor *sensor =
+        PixelSensor::Create(parameters, colorSpace, exposureTime, loc, alloc);
+    FilmBaseParameters filmBaseParameters(parameters, filter, sensor, loc);
+
+    return alloc.new_object<GradientBufferFilm>(filmBaseParameters, colorSpace, alloc);
 }
 
 Film Film::Create(const std::string &name, const ParameterDictionary &parameters,
@@ -1077,6 +1174,9 @@ Film Film::Create(const std::string &name, const ParameterDictionary &parameters
     else if (name == "spectral")
         film = SpectralFilm::Create(parameters, exposureTime, filter,
                                     parameters.ColorSpace(), loc, alloc);
+    else if (name == "gradient")
+        film = GradientBufferFilm::Create(parameters, exposureTime, filter,
+                                          parameters.ColorSpace(), loc, alloc);
     else
         ErrorExit(loc, "%s: film type unknown.", name);
 
