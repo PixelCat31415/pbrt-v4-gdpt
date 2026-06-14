@@ -272,16 +272,15 @@ void RayIntegrator::EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sampler
             L = SampledSpectrum(0.f);
         }
 
+        PBRT_DBG("%s\n",
+                 StringPrintf("Camera sample: %s -> ray %s -> L = %s, visibleSurface %s",
+                              cameraSample, cameraRay->ray, L,
+                              (visibleSurface ? visibleSurface.ToString() : "(none)"))
+                     .c_str());
+    } else {
         PBRT_DBG(
             "%s\n",
-            StringPrintf("Camera sample: %s -> ray %s -> L = %s, visibleSurface %s",
-                         cameraSample, cameraRay->ray, L,
-                         (visibleSurface ? visibleSurface.ToString() : "(none)"))
-                .c_str());
-    } else {
-	    PBRT_DBG("%s\n",
-	             StringPrintf("Camera sample: %s -> no ray generated", cameraSample)
-			             .c_str());
+            StringPrintf("Camera sample: %s -> no ray generated", cameraSample).c_str());
     }
     // Add camera ray's contribution to image
     camera.GetFilm().AddSample(pPixel, L, lambda, &visibleSurface,
@@ -1453,8 +1452,7 @@ retry:
         // Divide by pi so that fully visible is one.
         Ray r = isect.SpawnRay(wi);
         if (!IntersectP(r, maxDist)) {
-            return illumScale * illuminant.Sample(lambda) *
-                   Dot(wi, n) / (Pi * pdf);
+            return illumScale * illuminant.Sample(lambda) * Dot(wi, n) / (Pi * pdf);
         }
     }
     return SampledSpectrum(0.);
@@ -2179,14 +2177,15 @@ Float MISWeight(const Integrator &integrator, Camera camera, Vertex *lightVertic
 
     Film film = camera.GetFilm();
     Float splatScale = Float(film.FullResolution().x) * Float(film.FullResolution().y) /
-        Float(film.PixelBounds().Area());
+                       Float(film.PixelBounds().Area());
 
     // Consider hypothetical connection strategies along the camera subpath
     Float ri = 1;
     for (int i = t - 1; i > 0; --i) {
         ri *= remap0(cameraVertices[i].pdfRev) / remap0(cameraVertices[i].pdfFwd);
         // See https://github.com/mmp/pbrt-v4/issues/347
-        if (i == 1) ri /= splatScale;
+        if (i == 1)
+            ri /= splatScale;
         if (!cameraVertices[i].delta && !cameraVertices[i - 1].delta)
             sumRi += ri;
     }
@@ -2202,7 +2201,8 @@ Float MISWeight(const Integrator &integrator, Camera camera, Vertex *lightVertic
     }
 
     // See https://github.com/mmp/pbrt-v4/issues/347
-    if (t == 1) sumRi /= splatScale;
+    if (t == 1)
+        sumRi /= splatScale;
     return 1 / (1 + sumRi);
 }
 
@@ -2302,11 +2302,12 @@ SampledSpectrum BDPTIntegrator::Li(RayDifferential ray, SampledWavelengths &lamb
                     // scenes where the camera has a finite aperture, since
                     // we don't have the CameraSample either so just have
                     // to pass (0.5,0.5) in for the lens sample...
-                    pstd::optional<CameraWiSample> cs =
-                        camera.SampleWi(Interaction(ray(100.f), nullptr), Point2f(0.5f, 0.5f), lambda);
+                    pstd::optional<CameraWiSample> cs = camera.SampleWi(
+                        Interaction(ray(100.f), nullptr), Point2f(0.5f, 0.5f), lambda);
                     CHECK_RARE(1e-3, !cs);
                     if (cs)
-                        weightFilms[BufferIndex(s, t)].AddSplat(cs->pRaster, value, lambda);
+                        weightFilms[BufferIndex(s, t)].AddSplat(cs->pRaster, value,
+                                                                lambda);
                 }
             }
             if (t != 1)
@@ -2359,7 +2360,7 @@ SampledSpectrum ConnectBDPT(const Integrator &integrator, SampledWavelengths &la
                     // See https://github.com/mmp/pbrt-v4/issues/347
                     Film film = camera.GetFilm();
                     L *= Float(film.FullResolution().x) * Float(film.FullResolution().y) /
-                        Float(film.PixelBounds().Area());
+                         Float(film.PixelBounds().Area());
                 }
             }
         }
@@ -2432,8 +2433,8 @@ SampledSpectrum ConnectBDPT(const Integrator &integrator, SampledWavelengths &la
         ++zeroRadiancePaths;
     pathLength << s + t - 2;
     // Compute MIS weight for connection strategy
-    Float misWeight = L ? MISWeight(integrator, camera, lightVertices, cameraVertices, sampled, s,
-                                    t, lightSampler)
+    Float misWeight = L ? MISWeight(integrator, camera, lightVertices, cameraVertices,
+                                    sampled, s, t, lightSampler)
                         : 0.f;
     PBRT_DBG("MIS weight for (s,t) = (%d, %d) connection: %f\n", s, t, misWeight);
     DCHECK(!IsNaN(misWeight));
@@ -2471,6 +2472,159 @@ std::unique_ptr<BDPTIntegrator> BDPTIntegrator::Create(
     return std::make_unique<BDPTIntegrator>(camera, sampler, aggregate, lights, maxDepth,
                                             visualizeStrategies, visualizeWeights,
                                             regularize);
+}
+
+GDPTIntegrator::GDPTIntegrator(int maxDepth, Camera camera, Sampler sampler,
+                               Primitive aggregate, std::vector<Light> lights)
+    : ImageTileIntegrator(camera, sampler, aggregate, lights),
+      maxDepth(maxDepth),
+      lightSampler(lights, Allocator()),
+      gradFilm(*camera.GetFilm().Cast<GradientBufferFilm>()) {}
+
+void GDPTIntegrator::EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sampler sampler,
+                                         ScratchBuffer &scratchBuffer) {
+    // TODO:
+    Float lu = sampler.Get1D();
+    if (Options->disableWavelengthJitter)
+        lu = 0.5;
+    SampledWavelengths lambda = gradFilm.SampleWavelengths(lu);
+
+    // Initialize _CameraSample_ for current sample
+    Filter filter = gradFilm.GetFilter();
+    CameraSample cameraSample = GetCameraSample(sampler, pPixel, filter);
+
+    // Generate camera ray for current sample
+    pstd::optional<CameraRayDifferential> cameraRay =
+        camera.GenerateRayDifferential(cameraSample, lambda);
+
+    // Trace _cameraRay_ if valid
+    SampledSpectrum L(0.);
+    VisibleSurface visibleSurface;
+    if (cameraRay) {
+        // Double check that the ray's direction is normalized.
+        DCHECK_GT(Length(cameraRay->ray.d), .999f);
+        DCHECK_LT(Length(cameraRay->ray.d), 1.001f);
+        // Scale camera ray differentials based on image sampling rate
+        Float rayDiffScale =
+            std::max<Float>(.125f, 1 / std::sqrt((Float)sampler.SamplesPerPixel()));
+        if (!Options->disablePixelJitter)
+            cameraRay->ray.ScaleDifferentials(rayDiffScale);
+
+        ++nCameraRays;
+        L = cameraRay->weight *
+            Li(cameraRay->ray, lambda, sampler, scratchBuffer, nullptr);
+
+        // Issue warning if unexpected radiance value is returned
+        if (L.HasNaNs()) {
+            LOG_ERROR("Not-a-number radiance value returned for pixel (%d, "
+                      "%d), sample %d. Setting to black.",
+                      pPixel.x, pPixel.y, sampleIndex);
+            L = SampledSpectrum(0.f);
+        } else if (IsInf(L.y(lambda))) {
+            LOG_ERROR("Infinite radiance value returned for pixel (%d, %d), "
+                      "sample %d. Setting to black.",
+                      pPixel.x, pPixel.y, sampleIndex);
+            L = SampledSpectrum(0.f);
+        }
+
+        PBRT_DBG("%s\n",
+                 StringPrintf("Camera sample: %s -> ray %s -> L = %s, visibleSurface %s",
+                              cameraSample, cameraRay->ray, L,
+                              (visibleSurface ? visibleSurface.ToString() : "(none)"))
+                     .c_str());
+    } else {
+        PBRT_DBG(
+            "%s\n",
+            StringPrintf("Camera sample: %s -> no ray generated", cameraSample).c_str());
+    }
+    // Add camera ray's contribution to image
+    gradFilm.AddGradientSample({
+        .pFilm = pPixel,
+        .lambda = lambda,
+        .Lf = L,
+        .Lgx0 = SampledSpectrum(0.),
+        .Lgx1 = SampledSpectrum(0.),
+        .Lgy0 = SampledSpectrum(0.),
+        .Lgy1 = SampledSpectrum(0.),
+        .wf = cameraSample.filterWeight,
+        .wgx0 = 0,
+        .wgx1 = 0,
+        .wgy0 = 0,
+        .wgy1 = 0,
+    });
+}
+
+SampledSpectrum GDPTIntegrator::Li(RayDifferential ray, SampledWavelengths &lambda,
+                                   Sampler sampler, ScratchBuffer &scratchBuffer,
+                                   VisibleSurface *visibleSurface) const {
+    // TODO:
+    SampledSpectrum L(0.f), beta(1.f);
+    bool specularBounce = true;
+    int depth = 0;
+    while (beta) {
+        pstd::optional<ShapeIntersection> si = Intersect(ray);
+
+        if (!si) {
+            if (specularBounce)
+                for (const auto &light : infiniteLights)
+                    L += beta * light.Le(ray, lambda);
+            break;
+        }
+
+        SurfaceInteraction &isect = si->intr;
+        if (specularBounce)
+            L += beta * isect.Le(-ray.d, lambda);
+
+        if (depth++ == maxDepth)
+            break;
+
+        BSDF bsdf = isect.GetBSDF(ray, lambda, camera, scratchBuffer, sampler);
+        if (!bsdf) {
+            specularBounce = true;
+            isect.SkipIntersection(&ray, si->tHit);
+            continue;
+        }
+
+        Vector3f wo = -ray.d;
+        pstd::optional<SampledLight> sampledLight = lightSampler.Sample(sampler.Get1D());
+        if (sampledLight) {
+            Point2f uLight = sampler.Get2D();
+            pstd::optional<LightLiSample> ls =
+                sampledLight->light.SampleLi(isect, uLight, lambda);
+            if (ls && ls->L && ls->pdf > 0) {
+                Vector3f wi = ls->wi;
+                SampledSpectrum f = bsdf.f(wo, wi) * AbsDot(wi, isect.shading.n);
+                if (f && Unoccluded(isect, ls->pLight))
+                    L += beta * f * ls->L / (sampledLight->p * ls->pdf);
+            }
+        }
+
+        Float u = sampler.Get1D();
+        pstd::optional<BSDFSample> bs = bsdf.Sample_f(wo, u, sampler.Get2D());
+        if (!bs)
+            break;
+        beta *= bs->f * AbsDot(bs->wi, isect.shading.n) / bs->pdf;
+        specularBounce = bs->IsSpecular();
+        ray = isect.SpawnRay(bs->wi);
+
+        CHECK_GE(beta.y(lambda), 0.f);
+        DCHECK(!IsInf(beta.y(lambda)));
+    }
+    return L;
+}
+
+std::string GDPTIntegrator::ToString() const {
+    return StringPrintf("[ GDPTIntegrator maxDepth: %d ]", maxDepth);
+}
+
+std::unique_ptr<GDPTIntegrator> GDPTIntegrator::Create(
+    const ParameterDictionary &parameters, Camera camera, Sampler sampler,
+    Primitive aggregate, std::vector<Light> lights, const FileLoc *loc) {
+    if (!camera.GetFilm().Is<GradientBufferFilm>())
+        ErrorExit(loc, "GDPTIntegrator must be used with a GradientBufferFilm film.");
+
+    int maxDepth = parameters.GetOneInt("maxdepth", 5);
+    return std::make_unique<GDPTIntegrator>(maxDepth, camera, sampler, aggregate, lights);
 }
 
 STAT_PERCENT("Integrator/Acceptance rate", acceptedMutations, totalMutations);
@@ -3671,6 +3825,9 @@ std::unique_ptr<Integrator> Integrator::Create(
     else if (name == "bdpt")
         integrator =
             BDPTIntegrator::Create(parameters, camera, sampler, aggregate, lights, loc);
+    else if (name == "gdpt")
+        integrator =
+            GDPTIntegrator::Create(parameters, camera, sampler, aggregate, lights, loc);
     else if (name == "mlt")
         integrator = MLTIntegrator::Create(parameters, camera, aggregate, lights, loc);
     else if (name == "ambientocclusion")

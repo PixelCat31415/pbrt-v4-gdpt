@@ -378,6 +378,34 @@ class BDPTIntegrator : public RayIntegrator {
     mutable std::vector<Film> weightFilms;
 };
 
+class GDPTIntegrator : public ImageTileIntegrator {
+  public:
+    GDPTIntegrator(int maxDepth, Camera camera, Sampler sampler, Primitive aggregate,
+                   std::vector<Light> lights);
+
+    void EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sampler sampler,
+                             ScratchBuffer &scratchBuffer) final;
+
+    static std::unique_ptr<GDPTIntegrator> Create(const ParameterDictionary &parameters,
+                                                  Camera camera, Sampler sampler,
+                                                  Primitive aggregate,
+                                                  std::vector<Light> lights,
+                                                  const FileLoc *loc);
+
+    std::string ToString() const;
+
+  private:
+    SampledSpectrum Li(RayDifferential ray, SampledWavelengths &lambda, Sampler sampler,
+                       ScratchBuffer &scratchBuffer,
+                       VisibleSurface *visibleSurface) const;
+
+    int maxDepth;
+    UniformLightSampler lightSampler;
+    // we need a specific type of film, so we hold its reference to do less casting / type checking
+    // the camera (which owns the film) should have longer lifetime than the integrator, see RenderCPU()
+    GradientBufferFilm &gradFilm;
+};
+
 // MLTIntegrator Definition
 class MLTSampler;
 
