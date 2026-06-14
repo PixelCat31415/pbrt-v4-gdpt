@@ -2538,19 +2538,19 @@ void GDPTIntegrator::EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sample
             StringPrintf("Camera sample: %s -> no ray generated", cameraSample).c_str());
     }
     // Add camera ray's contribution to image
-    gradFilm.AddGradientSample({
-        .pFilm = pPixel,
-        .lambda = lambda,
-        .Lf = L,
-        .Lgx0 = SampledSpectrum(0.),
-        .Lgx1 = SampledSpectrum(0.),
-        .Lgy0 = SampledSpectrum(0.),
-        .Lgy1 = SampledSpectrum(0.),
-        .wf = cameraSample.filterWeight,
-        .wgx0 = 0,
-        .wgx1 = 0,
-        .wgy0 = 0,
-        .wgy1 = 0,
+    gradFilm.AddGradientSample((GradientBufferFilm::SampledGradient){
+        pPixel,
+        lambda,
+        L,
+        SampledSpectrum(0.),
+        SampledSpectrum(0.),
+        SampledSpectrum(0.),
+        SampledSpectrum(0.),
+        cameraSample.filterWeight,
+        0,
+        0,
+        0,
+        0,
     });
 }
 
