@@ -395,14 +395,16 @@ class GDPTIntegrator : public ImageTileIntegrator {
     std::string ToString() const;
 
   private:
-    SampledSpectrum Li(RayDifferential ray, SampledWavelengths &lambda, Sampler sampler,
-                       ScratchBuffer &scratchBuffer,
-                       VisibleSurface *visibleSurface) const;
+    bool EvaluatePathsRadiance(const CameraSample &cameraSample,
+                               const SampledWavelengths &lambda, Sampler sampler,
+                               ScratchBuffer &scratchBuffer,
+                               GradientBufferFilm::SampledGradient &result) const;
 
     int maxDepth;
     UniformLightSampler lightSampler;
-    // we need a specific type of film, so we hold its reference to do less casting / type checking
-    // the camera (which owns the film) should have longer lifetime than the integrator, see RenderCPU()
+    // we need a specific type of film, so we hold its reference to do less casting / type
+    // checking the camera (which owns the film) should have longer lifetime than the
+    // integrator, see RenderCPU()
     GradientBufferFilm &gradFilm;
 };
 
