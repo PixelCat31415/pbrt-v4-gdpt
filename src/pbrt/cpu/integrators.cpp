@@ -2483,7 +2483,6 @@ GDPTIntegrator::GDPTIntegrator(int maxDepth, Camera camera, Sampler sampler,
 
 void GDPTIntegrator::EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sampler sampler,
                                          ScratchBuffer &scratchBuffer) {
-    // TODO:
     Float lu = sampler.Get1D();
     if (Options->disableWavelengthJitter)
         lu = 0.5;
@@ -2534,15 +2533,15 @@ void GDPTIntegrator::EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sample
                 w = 0;
             }
         };
-        check_radiance(sampledGradient.Lf, sampledGradient.wf);
-        check_radiance(sampledGradient.Lgx0, sampledGradient.wgx0);
-        check_radiance(sampledGradient.Lgx1, sampledGradient.wgx1);
-        check_radiance(sampledGradient.Lgy0, sampledGradient.wgy0);
-        check_radiance(sampledGradient.Lgy1, sampledGradient.wgy1);
+        check_radiance(sampledGradient.L, sampledGradient.wf);
+        check_radiance(sampledGradient.Lx0, sampledGradient.wgx0);
+        check_radiance(sampledGradient.Lx1, sampledGradient.wgx1);
+        check_radiance(sampledGradient.Ly0, sampledGradient.wgy0);
+        check_radiance(sampledGradient.Ly1, sampledGradient.wgy1);
 
         PBRT_DBG("%s\n",
                  StringPrintf("Camera sample: %s -> L = %s, visibleSurface (none)",
-                              cameraSample, Lf)
+                              cameraSample, L)
                      .c_str());
     } else {
         PBRT_DBG(
@@ -2632,7 +2631,7 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
         DCHECK(!IsInf(beta.y(baseLambda)));
     }
 
-    result.Lf = baseRayDiff->weight * L;
+    result.L = baseRayDiff->weight * L;
     result.wf = 1;
     return true;
 }

@@ -535,7 +535,7 @@ class GradientBufferFilm : public FilmBase {
     struct SampledGradient {
         Point2i pFilm;
         SampledWavelengths lambda;
-        SampledSpectrum Lf, Lgx0, Lgx1, Lgy0, Lgy1;
+        SampledSpectrum L, Lx0, Lx1, Ly0, Ly1;
         Float wf, wgx0, wgx1, wgy0, wgy1;
     };
 
@@ -560,11 +560,11 @@ class GradientBufferFilm : public FilmBase {
 
         DCHECK(InsideExclusive(sample.pFilm, pixelBounds));
         Pixel &pixel = pixels[sample.pFilm];
-        accum_sample(sample.Lf, sample.wf, pixel.f);
-        accum_sample(sample.Lgx0, sample.wgx0, pixel.gx0);
-        accum_sample(sample.Lgx1, sample.wgx1, pixel.gx1);
-        accum_sample(sample.Lgy0, sample.wgy0, pixel.gy0);
-        accum_sample(sample.Lgy1, sample.wgy1, pixel.gy1);
+        accum_sample(sample.L, sample.wf, pixel.f);
+        accum_sample(sample.L - sample.Lx0, sample.wgx0, pixel.gx0);
+        accum_sample(sample.Lx1 - sample.L, sample.wgx1, pixel.gx1);
+        accum_sample(sample.L - sample.Ly0, sample.wgy0, pixel.gy0);
+        accum_sample(sample.Ly1 - sample.L, sample.wgy1, pixel.gy1);
     }
 
     PBRT_CPU_GPU

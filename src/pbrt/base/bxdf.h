@@ -149,6 +149,7 @@ struct BSDFSample {
     BxDFFlags flags;
     Float eta = 1;
     bool pdfIsProportional = false;
+    uint32_t branch = 0;
 };
 
 class DiffuseBxDF;
@@ -180,7 +181,8 @@ class BxDF
 
     PBRT_CPU_GPU inline pstd::optional<BSDFSample> Sample_f(
         Vector3f wo, Float uc, Point2f u, TransportMode mode = TransportMode::Radiance,
-        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const;
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All,
+        uint32_t sampleBranch = 0) const;
 
     PBRT_CPU_GPU inline Float PDF(
         Vector3f wo, Vector3f wi, TransportMode mode,
