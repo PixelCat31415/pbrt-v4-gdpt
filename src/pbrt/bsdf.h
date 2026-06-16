@@ -53,16 +53,21 @@ class BSDF {
         return specificBxDF->f(wo, wi, mode);
     }
 
+    // sampleBranch replays branch decisions (e.g. randomized reflection/transmission
+    // samples) in BxDF sampling. must be either 0 or values returned from previous calls
+    // to the same BxDF class
     PBRT_CPU_GPU
     pstd::optional<BSDFSample> Sample_f(
         Vector3f woRender, Float u, Point2f u2,
         TransportMode mode = TransportMode::Radiance,
-        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All,
+        uint32_t sampleBranch = 0) const {
         Vector3f wo = RenderToLocal(woRender);
         if (wo.z == 0 || !(bxdf.Flags() & sampleFlags))
             return {};
         // Sample _bxdf_ and return _BSDFSample_
-        pstd::optional<BSDFSample> bs = bxdf.Sample_f(wo, u, u2, mode, sampleFlags);
+        pstd::optional<BSDFSample> bs =
+            bxdf.Sample_f(wo, u, u2, mode, sampleFlags, sampleBranch);
         if (bs)
             DCHECK_GE(bs->pdf, 0);
         if (!bs || !bs->f || bs->pdf == 0 || bs->wi.z == 0)
@@ -90,7 +95,8 @@ class BSDF {
     PBRT_CPU_GPU pstd::optional<BSDFSample> Sample_f(
         Vector3f woRender, Float u, Point2f u2,
         TransportMode mode = TransportMode::Radiance,
-        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All,
+        uint32_t sampleBranch = 0) const {
         Vector3f wo = RenderToLocal(woRender);
         if (wo.z == 0)
             return {};
@@ -100,7 +106,7 @@ class BSDF {
             return {};
 
         pstd::optional<BSDFSample> bs =
-            specificBxDF->Sample_f(wo, u, u2, mode, sampleFlags);
+            specificBxDF->Sample_f(wo, u, u2, mode, sampleFlags, sampleBranch);
         if (!bs || !bs->f || bs->pdf == 0 || bs->wi.z == 0)
             return {};
         DCHECK_GT(bs->pdf, 0);
@@ -144,6 +150,9 @@ class BSDF {
 
     PBRT_CPU_GPU
     void Regularize() { bxdf.Regularize(); }
+
+    PBRT_CPU_GPU
+    unsigned int GetBxdfTypeIndex() const { return bxdf.Tag(); }
 
   private:
     // BSDF Private Members

@@ -44,7 +44,8 @@ class DiffuseBxDF {
     PBRT_CPU_GPU
     pstd::optional<BSDFSample> Sample_f(
         Vector3f wo, Float uc, Point2f u, TransportMode mode,
-        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All,
+        uint32_t sampleBranch = 0) const {
         if (!(sampleFlags & BxDFReflTransFlags::Reflection))
             return {};
         // Sample cosine-weighted hemisphere to compute _wi_ and _pdf_
@@ -97,7 +98,8 @@ class DiffuseTransmissionBxDF {
     PBRT_CPU_GPU
     pstd::optional<BSDFSample> Sample_f(
         Vector3f wo, Float uc, Point2f u, TransportMode mode,
-        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All,
+        uint32_t sampleBranch = 0) const {
         // Compute reflection and transmission probabilities for diffuse BSDF
         Float pr = R.MaxComponentValue(), pt = T.MaxComponentValue();
         if (!(sampleFlags & BxDFReflTransFlags::Reflection))
@@ -108,13 +110,14 @@ class DiffuseTransmissionBxDF {
             return {};
 
         // Randomly sample diffuse BSDF reflection or transmission
-        if (uc < pr / (pr + pt)) {
+        if (sampleBranch == 1 || (sampleBranch == 0 && uc < pr / (pr + pt))) {
             // Sample diffuse BSDF reflection
             Vector3f wi = SampleCosineHemisphere(u);
             if (wo.z < 0)
                 wi.z *= -1;
             Float pdf = CosineHemispherePDF(AbsCosTheta(wi)) * pr / (pr + pt);
-            return BSDFSample(f(wo, wi, mode), wi, pdf, BxDFFlags::DiffuseReflection);
+            return BSDFSample(f(wo, wi, mode), wi, pdf, BxDFFlags::DiffuseReflection, 1.f,
+                              false, 1);
 
         } else {
             // Sample diffuse BSDF transmission
@@ -122,7 +125,8 @@ class DiffuseTransmissionBxDF {
             if (wo.z > 0)
                 wi.z *= -1;
             Float pdf = CosineHemispherePDF(AbsCosTheta(wi)) * pt / (pr + pt);
-            return BSDFSample(f(wo, wi, mode), wi, pdf, BxDFFlags::DiffuseTransmission);
+            return BSDFSample(f(wo, wi, mode), wi, pdf, BxDFFlags::DiffuseTransmission,
+                              1.f, false, 2);
         }
     }
 
@@ -183,7 +187,8 @@ class DielectricBxDF {
     PBRT_CPU_GPU
     pstd::optional<BSDFSample> Sample_f(
         Vector3f wo, Float uc, Point2f u, TransportMode mode,
-        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const;
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All,
+        uint32_t sampleBranch = 0) const;
 
     PBRT_CPU_GPU
     SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const;
@@ -221,7 +226,10 @@ class ThinDielectricBxDF {
     PBRT_CPU_GPU
     pstd::optional<BSDFSample> Sample_f(Vector3f wo, Float uc, Point2f u,
                                         TransportMode mode,
-                                        BxDFReflTransFlags sampleFlags) const {
+                                        BxDFReflTransFlags sampleFlags,
+                                        uint32_t sampleBranch = 0) const {
+        DCHECK(sampleBranch <= 2);
+
         Float R = FrDielectric(AbsCosTheta(wo), eta), T = 1 - R;
         // Compute _R_ and _T_ accounting for scattering between interfaces
         if (R < 1) {
@@ -238,17 +246,19 @@ class ThinDielectricBxDF {
         if (pr == 0 && pt == 0)
             return {};
 
-        if (uc < pr / (pr + pt)) {
+        if (sampleBranch == 1 || (sampleBranch == 0 && uc < pr / (pr + pt))) {
             // Sample perfect specular dielectric BRDF
             Vector3f wi(-wo.x, -wo.y, wo.z);
             SampledSpectrum fr(R / AbsCosTheta(wi));
-            return BSDFSample(fr, wi, pr / (pr + pt), BxDFFlags::SpecularReflection);
+            return BSDFSample(fr, wi, pr / (pr + pt), BxDFFlags::SpecularReflection, 1.f,
+                              false, 1);
 
         } else {
             // Sample perfect specular transmission at thin dielectric interface
             Vector3f wi = -wo;
             SampledSpectrum ft(T / AbsCosTheta(wi));
-            return BSDFSample(ft, wi, pt / (pr + pt), BxDFFlags::SpecularTransmission);
+            return BSDFSample(ft, wi, pt / (pr + pt), BxDFFlags::SpecularTransmission,
+                              1.f, false, 2);
         }
     }
 
@@ -264,8 +274,7 @@ class ThinDielectricBxDF {
     std::string ToString() const;
 
     PBRT_CPU_GPU
-    void Regularize() { /* TODO */
-    }
+    void Regularize() { /* TODO */ }
 
     PBRT_CPU_GPU
     BxDFFlags Flags() const {
@@ -295,15 +304,22 @@ class ConductorBxDF {
     PBRT_CPU_GPU
     pstd::optional<BSDFSample> Sample_f(
         Vector3f wo, Float uc, Point2f u, TransportMode mode,
-        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All,
+        uint32_t sampleBranch = 0) const {
         if (!(sampleFlags & BxDFReflTransFlags::Reflection))
             return {};
         if (mfDistrib.EffectivelySmooth()) {
+            if (sampleBranch != 0 && sampleBranch != 1)
+                return {};
+
             // Sample perfect specular conductor BRDF
             Vector3f wi(-wo.x, -wo.y, wo.z);
             SampledSpectrum f = FrComplex(AbsCosTheta(wi), eta, k) / AbsCosTheta(wi);
-            return BSDFSample(f, wi, 1, BxDFFlags::SpecularReflection);
+            return BSDFSample(f, wi, 1, BxDFFlags::SpecularReflection, 1.f, false, 1);
         }
+        if (sampleBranch != 0 && sampleBranch != 2)
+            return {};
+
         // Sample rough conductor BRDF
         // Sample microfacet normal $\wm$ and reflected direction $\wi$
         if (wo.z == 0)
@@ -324,7 +340,7 @@ class ConductorBxDF {
 
         SampledSpectrum f =
             mfDistrib.D(wm) * F * mfDistrib.G(wo, wi) / (4 * cosTheta_i * cosTheta_o);
-        return BSDFSample(f, wi, pdf, BxDFFlags::GlossyReflection);
+        return BSDFSample(f, wi, pdf, BxDFFlags::GlossyReflection, 1.f, false, 2);
     }
 
     PBRT_CPU_GPU
@@ -407,7 +423,10 @@ class TopOrBottomBxDF {
     PBRT_CPU_GPU
     pstd::optional<BSDFSample> Sample_f(
         Vector3f wo, Float uc, Point2f u, TransportMode mode,
-        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All,
+        uint32_t sampleBranch = 0) const {
+        // only called from LayeredBxDF, which does not support sampleBranch
+        DCHECK(sampleBranch == 0);
         return top ? top->Sample_f(wo, uc, u, mode, sampleFlags)
                    : bottom->Sample_f(wo, uc, u, mode, sampleFlags);
     }
@@ -655,7 +674,11 @@ class LayeredBxDF {
     PBRT_CPU_GPU
     pstd::optional<BSDFSample> Sample_f(
         Vector3f wo, Float uc, Point2f u, TransportMode mode,
-        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All,
+        uint32_t sampleBranch = 0) const {
+        if (sampleBranch != 0)
+            return {};
+
         CHECK(sampleFlags == BxDFReflTransFlags::All);  // for now
         // Set _wo_ for layered BSDF sampling
         bool flipWi = false;
@@ -674,6 +697,7 @@ class LayeredBxDF {
             if (flipWi)
                 bs->wi = -bs->wi;
             bs->pdfIsProportional = true;
+            bs->sampledBranch = 1;
             return bs;
         }
         Vector3f w = bs->wi;
@@ -765,7 +789,7 @@ class LayeredBxDF {
                 flags |= specularPath ? BxDFFlags::Specular : BxDFFlags::Glossy;
                 if (flipWi)
                     w = -w;
-                return BSDFSample(f, w, pdf, flags, 1.f, true);
+                return BSDFSample(f, w, pdf, flags, 1.f, true, 1);
             }
 
             // Scale _f_ by cosine term after scattering at the interface
@@ -930,7 +954,8 @@ class HairBxDF {
     PBRT_CPU_GPU
     pstd::optional<BSDFSample> Sample_f(Vector3f wo, Float uc, Point2f u,
                                         TransportMode mode,
-                                        BxDFReflTransFlags sampleFlags) const;
+                                        BxDFReflTransFlags sampleFlags,
+                                        uint32_t sampleBranch = 0) const;
     PBRT_CPU_GPU
     Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
               BxDFReflTransFlags sampleFlags) const;
@@ -1036,7 +1061,8 @@ class MeasuredBxDF {
     PBRT_CPU_GPU
     pstd::optional<BSDFSample> Sample_f(Vector3f wo, Float uc, Point2f u,
                                         TransportMode mode,
-                                        BxDFReflTransFlags sampleFlags) const;
+                                        BxDFReflTransFlags sampleFlags,
+                                        uint32_t sampleBranch = 0) const;
     PBRT_CPU_GPU
     Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
               BxDFReflTransFlags sampleFlags) const;
@@ -1079,7 +1105,7 @@ class NormalizedFresnelBxDF {
 
     PBRT_CPU_GPU
     BSDFSample Sample_f(Vector3f wo, Float uc, Point2f u, TransportMode mode,
-                        BxDFReflTransFlags sampleFlags) const {
+                        BxDFReflTransFlags sampleFlags, uint32_t sampleBranch = 0) const {
         if (!(sampleFlags & BxDFReflTransFlags::Reflection))
             return {};
 
@@ -1131,22 +1157,23 @@ class NormalizedFresnelBxDF {
     Float eta;
 };
 
-PBRT_CPU_GPU inline SampledSpectrum BxDF::f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+PBRT_CPU_GPU inline SampledSpectrum BxDF::f(Vector3f wo, Vector3f wi,
+                                            TransportMode mode) const {
     auto f = [&](auto ptr) -> SampledSpectrum { return ptr->f(wo, wi, mode); };
     return Dispatch(f);
 }
 
-PBRT_CPU_GPU inline pstd::optional<BSDFSample> BxDF::Sample_f(Vector3f wo, Float uc, Point2f u,
-                                                 TransportMode mode,
-                                                 BxDFReflTransFlags sampleFlags) const {
+PBRT_CPU_GPU inline pstd::optional<BSDFSample> BxDF::Sample_f(
+    Vector3f wo, Float uc, Point2f u, TransportMode mode, BxDFReflTransFlags sampleFlags,
+    uint32_t sampleBranch) const {
     auto sample_f = [&](auto ptr) -> pstd::optional<BSDFSample> {
-        return ptr->Sample_f(wo, uc, u, mode, sampleFlags);
+        return ptr->Sample_f(wo, uc, u, mode, sampleFlags, sampleBranch);
     };
     return Dispatch(sample_f);
 }
 
 PBRT_CPU_GPU inline Float BxDF::PDF(Vector3f wo, Vector3f wi, TransportMode mode,
-                       BxDFReflTransFlags sampleFlags) const {
+                                    BxDFReflTransFlags sampleFlags) const {
     auto pdf = [&](auto ptr) { return ptr->PDF(wo, wi, mode, sampleFlags); };
     return Dispatch(pdf);
 }

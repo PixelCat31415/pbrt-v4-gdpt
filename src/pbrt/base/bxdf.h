@@ -123,13 +123,14 @@ struct BSDFSample {
     BSDFSample() = default;
     PBRT_CPU_GPU
     BSDFSample(SampledSpectrum f, Vector3f wi, Float pdf, BxDFFlags flags, Float eta = 1,
-               bool pdfIsProportional = false)
+               bool pdfIsProportional = false, uint32_t sampledBranch = 0)
         : f(f),
           wi(wi),
           pdf(pdf),
           flags(flags),
           eta(eta),
-          pdfIsProportional(pdfIsProportional) {}
+          pdfIsProportional(pdfIsProportional),
+          sampledBranch(sampledBranch) {}
 
     PBRT_CPU_GPU
     bool IsReflection() const { return pbrt::IsReflective(flags); }
@@ -149,7 +150,7 @@ struct BSDFSample {
     BxDFFlags flags;
     Float eta = 1;
     bool pdfIsProportional = false;
-    uint32_t branch = 0;
+    uint32_t sampledBranch = 0;
 };
 
 class DiffuseBxDF;

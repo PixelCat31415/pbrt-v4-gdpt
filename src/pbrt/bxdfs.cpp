@@ -75,9 +75,12 @@ std::string LayeredBxDF<TopBxDF, BottomBxDF, twoSided>::ToString() const {
 
 // DielectricBxDF Method Definitions
 PBRT_CPU_GPU pstd::optional<BSDFSample> DielectricBxDF::Sample_f(
-    Vector3f wo, Float uc, Point2f u, TransportMode mode,
-    BxDFReflTransFlags sampleFlags) const {
+    Vector3f wo, Float uc, Point2f u, TransportMode mode, BxDFReflTransFlags sampleFlags,
+    uint32_t sampleBranch) const {
     if (eta == 1 || mfDistrib.EffectivelySmooth()) {
+        if (sampleBranch != 0 && sampleBranch != 1 && sampleBranch != 2)
+            return {};
+
         // Sample perfect specular dielectric BSDF
         Float R = FrDielectric(CosTheta(wo), eta), T = 1 - R;
         // Compute probabilities _pr_ and _pt_ for sampling reflection and transmission
@@ -89,11 +92,12 @@ PBRT_CPU_GPU pstd::optional<BSDFSample> DielectricBxDF::Sample_f(
         if (pr == 0 && pt == 0)
             return {};
 
-        if (uc < pr / (pr + pt)) {
+        if (sampleBranch == 1 || (sampleBranch == 0 && uc < pr / (pr + pt))) {
             // Sample perfect specular dielectric BRDF
             Vector3f wi(-wo.x, -wo.y, wo.z);
             SampledSpectrum fr(R / AbsCosTheta(wi));
-            return BSDFSample(fr, wi, pr / (pr + pt), BxDFFlags::SpecularReflection);
+            return BSDFSample(fr, wi, pr / (pr + pt), BxDFFlags::SpecularReflection, 1.f,
+                              false, 1);
 
         } else {
             // Sample perfect specular dielectric BTDF
@@ -111,10 +115,13 @@ PBRT_CPU_GPU pstd::optional<BSDFSample> DielectricBxDF::Sample_f(
                 ft /= Sqr(etap);
 
             return BSDFSample(ft, wi, pt / (pr + pt), BxDFFlags::SpecularTransmission,
-                              etap);
+                              etap, false, 2);
         }
 
     } else {
+        if (sampleBranch != 0 && sampleBranch != 3 && sampleBranch != 4)
+            return {};
+
         // Sample rough dielectric BSDF
         Vector3f wm = mfDistrib.Sample_wm(wo, u);
         Float R = FrDielectric(Dot(wo, wm), eta);
@@ -129,7 +136,7 @@ PBRT_CPU_GPU pstd::optional<BSDFSample> DielectricBxDF::Sample_f(
             return {};
 
         Float pdf;
-        if (uc < pr / (pr + pt)) {
+        if (sampleBranch == 3 || (sampleBranch == 0 && uc < pr / (pr + pt))) {
             // Sample reflection at rough dielectric interface
             Vector3f wi = Reflect(wo, wm);
             if (!SameHemisphere(wo, wi))
@@ -140,7 +147,7 @@ PBRT_CPU_GPU pstd::optional<BSDFSample> DielectricBxDF::Sample_f(
             DCHECK(!IsNaN(pdf));
             SampledSpectrum f(mfDistrib.D(wm) * mfDistrib.G(wo, wi) * R /
                               (4 * CosTheta(wi) * CosTheta(wo)));
-            return BSDFSample(f, wi, pdf, BxDFFlags::GlossyReflection);
+            return BSDFSample(f, wi, pdf, BxDFFlags::GlossyReflection, 1.f, false, 3);
 
         } else {
             // Sample transmission at rough dielectric interface
@@ -164,12 +171,13 @@ PBRT_CPU_GPU pstd::optional<BSDFSample> DielectricBxDF::Sample_f(
             if (mode == TransportMode::Radiance)
                 ft /= Sqr(etap);
 
-            return BSDFSample(ft, wi, pdf, BxDFFlags::GlossyTransmission, etap);
+            return BSDFSample(ft, wi, pdf, BxDFFlags::GlossyTransmission, etap, false, 4);
         }
     }
 }
 
-PBRT_CPU_GPU SampledSpectrum DielectricBxDF::f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+PBRT_CPU_GPU SampledSpectrum DielectricBxDF::f(Vector3f wo, Vector3f wi,
+                                               TransportMode mode) const {
     if (eta == 1 || mfDistrib.EffectivelySmooth())
         return SampledSpectrum(0.f);
     // Evaluate rough dielectric BSDF
@@ -209,7 +217,7 @@ PBRT_CPU_GPU SampledSpectrum DielectricBxDF::f(Vector3f wo, Vector3f wi, Transpo
 }
 
 PBRT_CPU_GPU Float DielectricBxDF::PDF(Vector3f wo, Vector3f wi, TransportMode mode,
-                          BxDFReflTransFlags sampleFlags) const {
+                                       BxDFReflTransFlags sampleFlags) const {
     if (eta == 1 || mfDistrib.EffectivelySmooth())
         return 0;
     // Evaluate sampling PDF of rough dielectric BSDF
@@ -272,8 +280,8 @@ std::string ConductorBxDF::ToString() const {
 }
 
 // HairBxDF Method Definitions
-PBRT_CPU_GPU HairBxDF::HairBxDF(Float h, Float eta, const SampledSpectrum &sigma_a, Float beta_m,
-                   Float beta_n, Float alpha)
+PBRT_CPU_GPU HairBxDF::HairBxDF(Float h, Float eta, const SampledSpectrum &sigma_a,
+                                Float beta_m, Float beta_n, Float alpha)
     : h(h), eta(eta), sigma_a(sigma_a), beta_m(beta_m), beta_n(beta_n) {
     CHECK(h >= -1 && h <= 1);
     CHECK(beta_m >= 0 && beta_m <= 1);
@@ -300,7 +308,8 @@ PBRT_CPU_GPU HairBxDF::HairBxDF(Float h, Float eta, const SampledSpectrum &sigma
     }
 }
 
-PBRT_CPU_GPU SampledSpectrum HairBxDF::f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+PBRT_CPU_GPU SampledSpectrum HairBxDF::f(Vector3f wo, Vector3f wi,
+                                         TransportMode mode) const {
     // Compute hair coordinate system terms related to _wo_
     Float sinTheta_o = wo.x;
     Float cosTheta_o = SafeSqrt(1 - Sqr(sinTheta_o));
@@ -365,7 +374,8 @@ PBRT_CPU_GPU SampledSpectrum HairBxDF::f(Vector3f wo, Vector3f wi, TransportMode
     return fsum;
 }
 
-PBRT_CPU_GPU pstd::array<Float, HairBxDF::pMax + 1> HairBxDF::ApPDF(Float cosTheta_o) const {
+PBRT_CPU_GPU pstd::array<Float, HairBxDF::pMax + 1> HairBxDF::ApPDF(
+    Float cosTheta_o) const {
     // Initialize array of $A_p$ values for _cosTheta_o_
     Float sinTheta_o = SafeSqrt(1 - Sqr(cosTheta_o));
     // Compute $\cos\,\thetat$ for refracted ray
@@ -394,9 +404,10 @@ PBRT_CPU_GPU pstd::array<Float, HairBxDF::pMax + 1> HairBxDF::ApPDF(Float cosThe
     return apPDF;
 }
 
-PBRT_CPU_GPU pstd::optional<BSDFSample> HairBxDF::Sample_f(Vector3f wo, Float uc, Point2f u,
-                                              TransportMode mode,
-                                              BxDFReflTransFlags sampleFlags) const {
+PBRT_CPU_GPU pstd::optional<BSDFSample> HairBxDF::Sample_f(Vector3f wo, Float uc,
+                                                           Point2f u, TransportMode mode,
+                                                           BxDFReflTransFlags sampleFlags,
+                                                           uint32_t sampleBranch) const {
     // Compute hair coordinate system terms related to _wo_
     Float sinTheta_o = wo.x;
     Float cosTheta_o = SafeSqrt(1 - Sqr(sinTheta_o));
@@ -490,7 +501,7 @@ PBRT_CPU_GPU pstd::optional<BSDFSample> HairBxDF::Sample_f(Vector3f wo, Float uc
 }
 
 PBRT_CPU_GPU Float HairBxDF::PDF(Vector3f wo, Vector3f wi, TransportMode mode,
-                    BxDFReflTransFlags sampleFlags) const {
+                                 BxDFReflTransFlags sampleFlags) const {
     // TODO? flags...
 
     // Compute hair coordinate system terms related to _wo_
@@ -556,8 +567,8 @@ PBRT_CPU_GPU RGBUnboundedSpectrum HairBxDF::SigmaAFromConcentration(Float ce, Fl
 #endif
 }
 
-PBRT_CPU_GPU SampledSpectrum HairBxDF::SigmaAFromReflectance(const SampledSpectrum &c, Float beta_n,
-                                                const SampledWavelengths &lambda) {
+PBRT_CPU_GPU SampledSpectrum HairBxDF::SigmaAFromReflectance(
+    const SampledSpectrum &c, Float beta_n, const SampledWavelengths &lambda) {
     SampledSpectrum sigma_a;
     for (int i = 0; i < NSpectrumSamples; ++i)
         sigma_a[i] =
@@ -1033,9 +1044,9 @@ PBRT_CPU_GPU SampledSpectrum MeasuredBxDF::f(Vector3f wo, Vector3f wi,
            (4 * brdf->sigma.Evaluate(u_wo) * CosTheta(wi));
 }
 
-PBRT_CPU_GPU pstd::optional<BSDFSample> MeasuredBxDF::Sample_f(Vector3f wo, Float uc, Point2f u,
-                                                  TransportMode mode,
-                                                  BxDFReflTransFlags sampleFlags) const {
+PBRT_CPU_GPU pstd::optional<BSDFSample> MeasuredBxDF::Sample_f(
+    Vector3f wo, Float uc, Point2f u, TransportMode mode, BxDFReflTransFlags sampleFlags,
+    uint32_t sampleBranch) const {
     // Check flags and detect interactions in lower hemisphere
     if (!(sampleFlags & BxDFReflTransFlags::Reflection))
         return {};
@@ -1085,7 +1096,7 @@ PBRT_CPU_GPU pstd::optional<BSDFSample> MeasuredBxDF::Sample_f(Vector3f wo, Floa
 }
 
 PBRT_CPU_GPU Float MeasuredBxDF::PDF(Vector3f wo, Vector3f wi, TransportMode mode,
-                        BxDFReflTransFlags sampleFlags) const {
+                                     BxDFReflTransFlags sampleFlags) const {
     if (!(sampleFlags & BxDFReflTransFlags::Reflection))
         return 0;
     if (!SameHemisphere(wo, wi))
@@ -1129,7 +1140,7 @@ std::string NormalizedFresnelBxDF::ToString() const {
 
 // BxDF Method Definitions
 PBRT_CPU_GPU SampledSpectrum BxDF::rho(Vector3f wo, pstd::span<const Float> uc,
-                          pstd::span<const Point2f> u2) const {
+                                       pstd::span<const Point2f> u2) const {
     if (wo.z == 0)
         return {};
     SampledSpectrum r(0.);
