@@ -400,10 +400,11 @@ class GDPTIntegrator : public ImageTileIntegrator {
                                ScratchBuffer &scratchBuffer,
                                GradientBufferFilm::SampledGradient &result) const;
 
+    //  compared to SimplePathIntegrator, we fix sampleLights = false, sampleBSDF = true
     int maxDepth;
     UniformLightSampler lightSampler;
     // we need a specific type of film, so we hold its reference to do less casting / type
-    // checking the camera (which owns the film) should have longer lifetime than the
+    // checking. the camera (which owns the film) should have longer lifetime than the
     // integrator, see RenderCPU()
     GradientBufferFilm &gradFilm;
 };

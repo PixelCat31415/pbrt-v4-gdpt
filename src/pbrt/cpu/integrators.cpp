@@ -2556,82 +2556,128 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
     const CameraSample &cameraSample, const SampledWavelengths &lambda, Sampler sampler,
     ScratchBuffer &scratchBuffer, GradientBufferFilm::SampledGradient &result) const {
     // TODO:
-    auto generate_ray_diff = [this, &sampler](CameraSample cameraSample,
-                                              SampledWavelengths &lambda,
-                                              Vector2i offset) {
+    struct PathVertex {
+        SampledWavelengths lambda = {};
+        SampledSpectrum beta = SampledSpectrum(1.f);
+        bool specularBounce = true;
+        RayDifferential ray = {};
+
+        pstd::optional<ShapeIntersection> si = {};
+        BSDF bsdf = {};
+        pstd::optional<BSDFSample> bs = {};
+    };
+    struct Path {
+        SampledSpectrum cameraWeight = {};
+        int length = 0;
+        pstd::span<PathVertex> path;
+        Path() = delete;
+        Path(const Path &) = delete;
+        Path &operator=(const Path &) = delete;
+        Path(Path &&o) : cameraWeight(o.cameraWeight), length(o.length), path(o.path) {
+            o.path = {};
+            o.length = 0;
+        }
+        Path &operator=(Path &&o) {
+            if (this != &o) {
+                std::destroy(path.begin(), path.end());
+                cameraWeight = o.cameraWeight;
+                length = o.length;
+                path = o.path;
+                o.path = {};
+                o.length = 0;
+            }
+            return *this;
+        }
+        Path(ScratchBuffer &scratchBuffer, int maxDepth) {
+            PathVertex *ptr = scratchBuffer.Alloc<PathVertex[]>(maxDepth);
+            path = pstd::span<PathVertex>(ptr, maxDepth + 1);
+        }
+        ~Path() { std::destroy(path.begin(), path.end()); }
+        PathVertex &operator[](size_t index) { return path[index]; }
+        const PathVertex &operator[](size_t index) const { return path[index]; }
+    };
+
+    auto generate_path = [this, &sampler, &lambda, &scratchBuffer](
+                             CameraSample cameraSample,
+                             Vector2i offset) -> pstd::optional<Path> {
+        auto path_lambda = lambda;
         cameraSample.pFilm += offset;
         pstd::optional<CameraRayDifferential> ray =
-            camera.GenerateRayDifferential(cameraSample, lambda);
-        if (ray) {
-            DCHECK_GT(Length(ray->ray.d), .999f);
-            DCHECK_LT(Length(ray->ray.d), 1.001f);
-            Float rayDiffScale =
-                std::max<Float>(.125f, 1 / std::sqrt((Float)sampler.SamplesPerPixel()));
-            if (!Options->disablePixelJitter)
-                ray->ray.ScaleDifferentials(rayDiffScale);
-        }
-        return ray;
+            camera.GenerateRayDifferential(cameraSample, path_lambda);
+        if (!ray)
+            return {};
+        DCHECK_GT(Length(ray->ray.d), .999f);
+        DCHECK_LT(Length(ray->ray.d), 1.001f);
+        Float rayDiffScale =
+            std::max<Float>(.125f, 1 / std::sqrt((Float)sampler.SamplesPerPixel()));
+        if (!Options->disablePixelJitter)
+            ray->ray.ScaleDifferentials(rayDiffScale);
+
+        Path path(scratchBuffer, maxDepth);
+        path.cameraWeight = ray->weight;
+        path[0].ray = ray->ray;
+        path[0].lambda = path_lambda;
+        return path;
     };
-    auto baseLambda = lambda;
-    auto baseRayDiff = generate_ray_diff(cameraSample, baseLambda, Vector2i{0, 0});
-    if (!baseRayDiff)
-        return false;
-    RayDifferential &baseRay = baseRayDiff->ray;
 
-    SampledSpectrum L(0.f), beta(1.f);
-    bool specularBounce = true;
-    int depth = 0;
-    while (beta) {
-        pstd::optional<ShapeIntersection> si = Intersect(baseRay);
-
-        if (!si) {
-            if (specularBounce)
+    auto get_path_contribution = [this, &sampler](const Path &path) {
+        SampledSpectrum L(0.f);
+        for (int depth = 0; depth < path.length; depth++) {
+            auto &vert = path[depth];
+            if (!vert.beta)
+                break;
+            if (!vert.si) {
                 for (const auto &light : infiniteLights)
-                    L += beta * light.Le(baseRay, baseLambda);
-            break;
+                    L += vert.beta * light.Le(vert.ray, vert.lambda);
+            } else {
+                L += vert.beta * vert.si->intr.Le(-vert.ray.d, vert.lambda);
+            }
         }
+        return L;
+    };
 
-        SurfaceInteraction &isect = si->intr;
-        if (specularBounce)
-            L += beta * isect.Le(-baseRay.d, baseLambda);
-
-        if (depth++ == maxDepth)
+    pstd::optional<Path> basePath = generate_path(cameraSample, Vector2i{0, 0});
+    if (!basePath)
+        return false;
+    while (true) {
+        PathVertex &vert0 = (*basePath)[basePath->length];
+        if (!vert0.beta)
+            break;
+        vert0.si = Intersect(vert0.ray);
+        if (!vert0.si)
             break;
 
-        BSDF bsdf = isect.GetBSDF(baseRay, baseLambda, camera, scratchBuffer, sampler);
-        if (!bsdf) {
-            specularBounce = true;
-            isect.SkipIntersection(&baseRay, si->tHit);
+        if (basePath->length++ == maxDepth)
+            break;
+
+        PathVertex &vert1 = (*basePath)[basePath->length];
+        vert1.lambda = vert0.lambda;
+        vert1.beta = vert0.beta;
+
+        SurfaceInteraction &isect = vert0.si->intr;
+        vert0.bsdf =
+            isect.GetBSDF(vert0.ray, vert1.lambda, camera, scratchBuffer, sampler);
+        if (!vert0.bsdf) {
+            vert1.specularBounce = true;
+            vert1.ray = vert0.ray;
+            isect.SkipIntersection(&vert1.ray, vert0.si->tHit);
             continue;
         }
 
-        Vector3f wo = -baseRay.d;
-        pstd::optional<SampledLight> sampledLight = lightSampler.Sample(sampler.Get1D());
-        if (sampledLight) {
-            Point2f uLight = sampler.Get2D();
-            pstd::optional<LightLiSample> ls =
-                sampledLight->light.SampleLi(isect, uLight, baseLambda);
-            if (ls && ls->L && ls->pdf > 0) {
-                Vector3f wi = ls->wi;
-                SampledSpectrum f = bsdf.f(wo, wi) * AbsDot(wi, isect.shading.n);
-                if (f && Unoccluded(isect, ls->pLight))
-                    L += beta * f * ls->L / (sampledLight->p * ls->pdf);
-            }
-        }
-
+        Vector3f wo = -vert0.ray.d;
         Float u = sampler.Get1D();
-        pstd::optional<BSDFSample> bs = bsdf.Sample_f(wo, u, sampler.Get2D());
-        if (!bs)
+        vert0.bs = vert0.bsdf.Sample_f(wo, u, sampler.Get2D());
+        if (!vert0.bs)
             break;
-        beta *= bs->f * AbsDot(bs->wi, isect.shading.n) / bs->pdf;
-        specularBounce = bs->IsSpecular();
-        baseRay = isect.SpawnRay(bs->wi);
+        vert1.beta *= vert0.bs->f * AbsDot(vert0.bs->wi, isect.shading.n) / vert0.bs->pdf;
+        vert1.specularBounce = vert0.bs->IsSpecular();
+        vert1.ray = isect.SpawnRay(vert0.bs->wi);
 
-        CHECK_GE(beta.y(baseLambda), 0.f);
-        DCHECK(!IsInf(beta.y(baseLambda)));
+        CHECK_GE(vert1.beta.y(vert1.lambda), 0.f);
+        DCHECK(!IsInf(vert1.beta.y(vert1.lambda)));
     }
 
-    result.L = baseRayDiff->weight * L;
+    result.L = basePath->cameraWeight * get_path_contribution(*basePath);
     result.wf = 1;
     return true;
 }
