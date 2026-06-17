@@ -2589,7 +2589,7 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
             return *this;
         }
         Path(ScratchBuffer &scratchBuffer, int maxDepth) {
-            PathVertex *ptr = scratchBuffer.Alloc<PathVertex[]>(maxDepth);
+            PathVertex *ptr = scratchBuffer.Alloc<PathVertex[]>(maxDepth + 1);
             path = pstd::span<PathVertex>(ptr, maxDepth + 1);
         }
         ~Path() { std::destroy(path.begin(), path.end()); }
@@ -2643,11 +2643,10 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
         PathVertex &vert0 = (*basePath)[basePath->length];
         if (!vert0.beta)
             break;
-        vert0.si = Intersect(vert0.ray);
-        if (!vert0.si)
-            break;
 
-        if (basePath->length++ == maxDepth)
+        basePath->length++;
+        vert0.si = Intersect(vert0.ray);
+        if (basePath->length > maxDepth || !vert0.si)
             break;
 
         PathVertex &vert1 = (*basePath)[basePath->length];
