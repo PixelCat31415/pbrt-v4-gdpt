@@ -2599,7 +2599,7 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
 
     auto generate_path = [this, &sampler, &lambda, &scratchBuffer](
                              CameraSample cameraSample,
-                             Vector2i offset) -> pstd::optional<Path> {
+                             const Vector2i offset) -> pstd::optional<Path> {
         auto path_lambda = lambda;
         cameraSample.pFilm += offset;
         pstd::optional<CameraRayDifferential> ray =
@@ -2620,25 +2620,11 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
         return path;
     };
 
-    auto get_path_contribution = [this, &sampler](const Path &path) {
-        SampledSpectrum L(0.f);
-        for (int depth = 0; depth < path.length; depth++) {
-            auto &vert = path[depth];
-            if (!vert.beta)
-                break;
-            if (!vert.si) {
-                for (const auto &light : infiniteLights)
-                    L += vert.beta * light.Le(vert.ray, vert.lambda);
-            } else {
-                L += vert.beta * vert.si->intr.Le(-vert.ray.d, vert.lambda);
-            }
-        }
-        return L;
-    };
-
     pstd::optional<Path> basePath = generate_path(cameraSample, Vector2i{0, 0});
     if (!basePath)
         return false;
+    result.L = SampledSpectrum(0.f);
+    result.wf = 1.f;
     while (true) {
         PathVertex &vert0 = (*basePath)[basePath->length];
         if (!vert0.beta)
@@ -2646,7 +2632,14 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
 
         basePath->length++;
         vert0.si = Intersect(vert0.ray);
-        if (basePath->length > maxDepth || !vert0.si)
+        if (!vert0.si) {
+            for (const auto &light : infiniteLights)
+                result.L += vert0.beta * light.Le(vert0.ray, vert0.lambda);
+            break;
+        } else {
+            result.L += vert0.beta * vert0.si->intr.Le(-vert0.ray.d, vert0.lambda);
+        }
+        if (basePath->length > maxDepth)
             break;
 
         PathVertex &vert1 = (*basePath)[basePath->length];
@@ -2675,9 +2668,8 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
         CHECK_GE(vert1.beta.y(vert1.lambda), 0.f);
         DCHECK(!IsInf(vert1.beta.y(vert1.lambda)));
     }
+    result.L *= basePath->cameraWeight;
 
-    result.L = basePath->cameraWeight * get_path_contribution(*basePath);
-    result.wf = 1;
     return true;
 }
 
