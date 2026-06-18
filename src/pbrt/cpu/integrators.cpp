@@ -2519,7 +2519,8 @@ void GDPTIntegrator::EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sample
                           "%d), sample %d. Setting to black.",
                           pPixel.x, pPixel.y, sampleIndex);
                 L = SampledSpectrum(0.f);
-            } else if (IsInf(L.y(lambda))) {
+            } else if (!IsFinite(L.MaxComponentValue()) ||
+                       !IsFinite(L.MinComponentValue()) || IsInf(L.y(lambda))) {
                 LOG_ERROR("Infinite radiance value returned for pixel (%d, %d), "
                           "sample %d. Setting to black.",
                           pPixel.x, pPixel.y, sampleIndex);
@@ -2548,7 +2549,6 @@ void GDPTIntegrator::EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sample
 bool GDPTIntegrator::EvaluatePathsRadiance(
     const CameraSample &cameraSample, const SampledWavelengths &lambda, Sampler sampler,
     ScratchBuffer &scratchBuffer, GradientBufferFilm::SampledGradient &result) const {
-    // TODO:
     struct PathVertex {
         SampledSpectrum beta = SampledSpectrum(1.f);
         bool specularBounce = true;
@@ -2702,20 +2702,20 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
             offsetPath->length++;
 
             // both paths reach here without rejection -- invertible
-            Float mis_weight = 1.f / (1.f + ratiop * jacobian);
+            Float base_weight = 1.f / (1.f + ratiop * jacobian);
+            Float offset_weight = base_weight * jacobian;
             if (!vertb0.si) {
                 for (const auto &light : infiniteLights)
-                    Lg += mis_weight *
-                          (vertb0.beta * light.Le(vertb0.ray, basePath->lambda) -
-                           verto0.beta * light.Le(verto0.ray, offsetPath->lambda) *
-                               jacobian);
+                    Lg += (base_weight * vertb0.beta *
+                               light.Le(vertb0.ray, basePath->lambda) -
+                           offset_weight * verto0.beta *
+                               light.Le(verto0.ray, offsetPath->lambda));
                 break;
             } else {
-                Lg +=
-                    mis_weight *
-                    (vertb0.beta * vertb0.si->intr.Le(-vertb0.ray.d, basePath->lambda) -
-                     verto0.beta * verto0.si->intr.Le(-verto0.ray.d, offsetPath->lambda) *
-                         jacobian);
+                Lg += (base_weight * vertb0.beta *
+                           vertb0.si->intr.Le(-vertb0.ray.d, basePath->lambda) -
+                       offset_weight * verto0.beta *
+                           verto0.si->intr.Le(-verto0.ray.d, offsetPath->lambda));
             }
 
             if (offsetPath->length > maxDepth || offsetPath->length >= basePath->length)
