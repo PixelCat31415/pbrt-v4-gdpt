@@ -152,7 +152,7 @@ class BSDF {
     void Regularize() { bxdf.Regularize(); }
 
     PBRT_CPU_GPU
-    unsigned int GetBxdfTypeIndex() const { return bxdf.Tag(); }
+    unsigned int GetBxdfTag() const { return bxdf.Tag(); }
 
   private:
     // BSDF Private Members

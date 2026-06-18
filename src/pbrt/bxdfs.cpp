@@ -105,7 +105,7 @@ PBRT_CPU_GPU pstd::optional<BSDFSample> DielectricBxDF::Sample_f(
             Vector3f wi;
             Float etap;
             bool valid = Refract(wo, Normal3f(0, 0, 1), eta, &etap, &wi);
-            CHECK_RARE(1e-5f, !valid);
+            CHECK_RARE(1e-5f, !valid && sampleBranch == 0);
             if (!valid)
                 return {};
 

@@ -2506,14 +2506,14 @@ void GDPTIntegrator::EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sample
         cameraSample = cs;
     }
 
-    GradientBufferFilm::SampledGradient sampledGradient{pPixel, lambda};
+    GradientBufferFilm::SampledGradient sampledGradient{pPixel,
+                                                        cameraSample.filterWeight};
     bool traced = EvaluatePathsRadiance(cameraSample, lambda, sampler, scratchBuffer,
                                         sampledGradient);
     if (traced) {
         ++nCameraRays;
 
-        auto check_radiance = [&](SampledSpectrum &L, Float &w) {
-            w *= cameraSample.filterWeight;
+        auto check_radiance = [&](const SampledWavelengths &lambda, SampledSpectrum &L) {
             if (L.HasNaNs()) {
                 LOG_ERROR("Not-a-number radiance value returned for pixel (%d, "
                           "%d), sample %d. Setting to black.",
@@ -2525,23 +2525,16 @@ void GDPTIntegrator::EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sample
                           pPixel.x, pPixel.y, sampleIndex);
                 L = SampledSpectrum(0.f);
             }
-            if (IsNaN(w) || IsInf(w)) {
-                LOG_ERROR("Not-a-number or infinite sample weight value returned for "
-                          "pixel (%d, %d), sample %d. Discarding sample.",
-                          pPixel.x, pPixel.y, sampleIndex);
-                L = SampledSpectrum(0.f);
-                w = 0;
-            }
         };
-        check_radiance(sampledGradient.L, sampledGradient.wf);
-        check_radiance(sampledGradient.Lx0, sampledGradient.wgx0);
-        check_radiance(sampledGradient.Lx1, sampledGradient.wgx1);
-        check_radiance(sampledGradient.Ly0, sampledGradient.wgy0);
-        check_radiance(sampledGradient.Ly1, sampledGradient.wgy1);
+        check_radiance(sampledGradient.lambdaBase, sampledGradient.L);
+        check_radiance(sampledGradient.lambdaGx0, sampledGradient.Lgx0);
+        check_radiance(sampledGradient.lambdaGx1, sampledGradient.Lgx1);
+        check_radiance(sampledGradient.lambdaGy0, sampledGradient.Lgy0);
+        check_radiance(sampledGradient.lambdaGy1, sampledGradient.Lgy1);
 
         PBRT_DBG("%s\n",
                  StringPrintf("Camera sample: %s -> L = %s, visibleSurface (none)",
-                              cameraSample, L)
+                              cameraSample, sampledGradient.L)
                      .c_str());
     } else {
         PBRT_DBG(
@@ -2557,7 +2550,6 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
     ScratchBuffer &scratchBuffer, GradientBufferFilm::SampledGradient &result) const {
     // TODO:
     struct PathVertex {
-        SampledWavelengths lambda = {};
         SampledSpectrum beta = SampledSpectrum(1.f);
         bool specularBounce = true;
         RayDifferential ray = {};
@@ -2568,12 +2560,17 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
     };
     struct Path {
         SampledSpectrum cameraWeight = {};
+        SampledWavelengths lambda = {};
         int length = 0;
         pstd::span<PathVertex> path;
         Path() = delete;
         Path(const Path &) = delete;
         Path &operator=(const Path &) = delete;
-        Path(Path &&o) : cameraWeight(o.cameraWeight), length(o.length), path(o.path) {
+        Path(Path &&o)
+            : cameraWeight(o.cameraWeight),
+              lambda(o.lambda),
+              length(o.length),
+              path(o.path) {
             o.path = {};
             o.length = 0;
         }
@@ -2581,6 +2578,7 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
             if (this != &o) {
                 std::destroy(path.begin(), path.end());
                 cameraWeight = o.cameraWeight;
+                lambda = o.lambda;
                 length = o.length;
                 path = o.path;
                 o.path = {};
@@ -2615,8 +2613,8 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
 
         Path path(scratchBuffer, maxDepth);
         path.cameraWeight = ray->weight;
+        path.lambda = path_lambda;
         path[0].ray = ray->ray;
-        path[0].lambda = path_lambda;
         return path;
     };
 
@@ -2624,7 +2622,6 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
     if (!basePath)
         return false;
     result.L = SampledSpectrum(0.f);
-    result.wf = 1.f;
     while (true) {
         PathVertex &vert0 = (*basePath)[basePath->length];
         if (!vert0.beta)
@@ -2634,21 +2631,20 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
         vert0.si = Intersect(vert0.ray);
         if (!vert0.si) {
             for (const auto &light : infiniteLights)
-                result.L += vert0.beta * light.Le(vert0.ray, vert0.lambda);
+                result.L += vert0.beta * light.Le(vert0.ray, basePath->lambda);
             break;
         } else {
-            result.L += vert0.beta * vert0.si->intr.Le(-vert0.ray.d, vert0.lambda);
+            result.L += vert0.beta * vert0.si->intr.Le(-vert0.ray.d, basePath->lambda);
         }
         if (basePath->length > maxDepth)
             break;
 
         PathVertex &vert1 = (*basePath)[basePath->length];
-        vert1.lambda = vert0.lambda;
         vert1.beta = vert0.beta;
 
         SurfaceInteraction &isect = vert0.si->intr;
         vert0.bsdf =
-            isect.GetBSDF(vert0.ray, vert1.lambda, camera, scratchBuffer, sampler);
+            isect.GetBSDF(vert0.ray, basePath->lambda, camera, scratchBuffer, sampler);
         if (!vert0.bsdf) {
             vert1.specularBounce = true;
             vert1.ray = vert0.ray;
@@ -2665,10 +2661,163 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
         vert1.specularBounce = vert0.bs->IsSpecular();
         vert1.ray = isect.SpawnRay(vert0.bs->wi);
 
-        CHECK_GE(vert1.beta.y(vert1.lambda), 0.f);
-        DCHECK(!IsInf(vert1.beta.y(vert1.lambda)));
+        CHECK_GE(vert1.beta.y(basePath->lambda), 0.f);
+        DCHECK(!IsInf(vert1.beta.y(basePath->lambda)));
     }
     result.L *= basePath->cameraWeight;
+    result.lambdaBase = basePath->lambda;
+
+    auto trace_offset_path = [this, &cameraSample, &sampler, &scratchBuffer,
+                              &basePath = std::as_const(basePath),
+                              &generate_path](const Vector2i pixelOffset)
+        -> std::tuple<SampledWavelengths, SampledSpectrum> {
+        pstd::optional<Path> offsetPath = generate_path(cameraSample, pixelOffset);
+
+        // carries the absolute value, always positive
+        Float jacobian = 1.f;
+        // ratiop = p(y) / p(x). used for MIS weight = 1 / (1 + ratiop * |jacobian|)
+        Float ratiop = 1.f;
+        SampledSpectrum Lg(0.f);
+
+        // for each path prefix,
+        // if invertible: Lg += w * (L_base - L_offset * |J|)
+        //   Where L_offset = Le_offset * prod( f_offset(pi+1 -> pi -> pi-1) * |cos
+        //   thetai_offset| / pdf(omegai_base) ) (note the last term!)
+        //   This is accounted by beta in offset paths being divided by base path pdf
+        //   instead of its own
+        // if not invertible: Lg += Lbase
+
+        while (offsetPath) {
+            const PathVertex &vertb0 = (*basePath)[offsetPath->length];
+            PathVertex &verto0 = (*offsetPath)[offsetPath->length];
+            if (!verto0.beta)
+                break;
+
+            verto0.si = Intersect(verto0.ray);
+            if (static_cast<bool>(vertb0.si) != static_cast<bool>(verto0.si)) {
+                // one of the paths found intersection while the other does not -- not
+                // invertible
+                break;
+            }
+            offsetPath->length++;
+
+            // both paths reach here without rejection -- invertible
+            Float mis_weight = 1.f / (1.f + ratiop * jacobian);
+            if (!vertb0.si) {
+                for (const auto &light : infiniteLights)
+                    Lg += mis_weight *
+                          (vertb0.beta * light.Le(vertb0.ray, basePath->lambda) -
+                           verto0.beta * light.Le(verto0.ray, offsetPath->lambda) *
+                               jacobian);
+                break;
+            } else {
+                Lg +=
+                    mis_weight *
+                    (vertb0.beta * vertb0.si->intr.Le(-vertb0.ray.d, basePath->lambda) -
+                     verto0.beta * verto0.si->intr.Le(-verto0.ray.d, offsetPath->lambda) *
+                         jacobian);
+            }
+
+            if (offsetPath->length > maxDepth || offsetPath->length >= basePath->length)
+                break;
+
+            const PathVertex &vertb1 = (*basePath)[offsetPath->length];
+            PathVertex &verto1 = (*offsetPath)[offsetPath->length];
+            verto1.beta = verto0.beta;
+
+            verto0.bsdf = verto0.si->intr.GetBSDF(verto0.ray, offsetPath->lambda, camera,
+                                                  scratchBuffer, sampler);
+            // base/offset paths do not land on the same BxDF type -- not invertible
+            if (static_cast<bool>(vertb0.bsdf) != static_cast<bool>(verto0.bsdf) ||
+                vertb0.bsdf.GetBxdfTag() != verto0.bsdf.GetBxdfTag())
+                break;
+            if (!verto0.bsdf) {
+                verto1.specularBounce = true;
+                verto1.ray = verto0.ray;
+                verto0.si->intr.SkipIntersection(&verto1.ray, verto0.si->tHit);
+                continue;
+            }
+
+            // shift path vertex
+            if (!vertb0.bs) {
+                break;
+            } else if (vertb0.bs->IsSpecular()) {
+                // specular -- sample BxDF with the same branch, jacobian = 1
+                // random values for sampling should not matter here as we are not
+                // sampling anything. if the BxDF does not support this we simply mark
+                // this offset path non-invertible.
+                verto0.bs = verto0.bsdf.Sample_f(
+                    -verto0.ray.d, 0.f, {0.f, 0.f}, pbrt::TransportMode::Radiance,
+                    pbrt::BxDFReflTransFlags::All, vertb0.bs->sampledBranch);
+
+                // failed to sample BxDF with the same branch -- not invertible
+                if (!verto0.bs)
+                    break;
+
+                verto1.beta *= verto0.bs->f *
+                               AbsDot(verto0.bs->wi, verto0.si->intr.shading.n) /
+                               vertb0.bs->pdf;
+                verto1.specularBounce = verto0.bs->IsSpecular();
+                verto1.ray = verto0.si->intr.SpawnRay(verto0.bs->wi);
+                CHECK(verto1.specularBounce);
+
+                ratiop *= verto0.bs->pdf / vertb0.bs->pdf;
+                // jacobian *= 1
+            } else if (vertb1.si) {
+                // glossy/diffuse, next base vertex is not infinite -- connect to next
+                // base vertex, jacobian = ratio of geometric term
+                Vector3f wo = -verto0.ray.d;
+                Vector3f wi = Normalize(vertb1.si->intr.p() - verto0.si->intr.p());
+                SampledSpectrum bsdf_f = verto0.bsdf.f(wo, wi);
+                Float bsdf_pdf = verto0.bsdf.PDF(wo, wi);
+                verto1.beta *=
+                    bsdf_f * AbsDot(wi, verto0.si->intr.shading.n) / vertb0.bs->pdf;
+                verto1.specularBounce = false;
+                verto1.ray = verto0.si->intr.SpawnRay(wi);
+
+                // reconnection attempt blocked -- not invertible
+                if (!Unoccluded(verto0.si->intr, vertb1.si->intr))
+                    break;
+
+                ratiop *= bsdf_pdf / vertb0.bs->pdf;
+                jacobian *= AbsDot(verto1.ray.d, vertb1.si->intr.n) /
+                            AbsDot(vertb1.ray.d, vertb1.si->intr.n) *
+                            DistanceSquared(vertb1.si->intr.p(), vertb0.si->intr.p()) /
+                            DistanceSquared(vertb1.si->intr.p(), verto0.si->intr.p());
+            } else {
+                // glossy/diffuse, next base vertex missed all objects -- not sure what to
+                // do, let's simply mark it not invertible
+                break;
+            }
+
+            if (jacobian == 0 || IsNaN(jacobian) || IsInf(jacobian))
+                break;
+            CHECK_GE(verto1.beta.y(offsetPath->lambda), 0.f);
+            DCHECK(!IsInf(verto1.beta.y(offsetPath->lambda)));
+        }
+
+        // paths in basePath longer than offsetPath -- not invertible
+        int offsetPathLength = offsetPath ? offsetPath->length : 0;
+        for (int depth = offsetPathLength; depth < basePath->length; depth++) {
+            const PathVertex &vertb0 = (*basePath)[depth];
+            if (!vertb0.si) {
+                for (const auto &light : infiniteLights)
+                    Lg += vertb0.beta * light.Le(vertb0.ray, basePath->lambda);
+            } else {
+                Lg += vertb0.beta * vertb0.si->intr.Le(-vertb0.ray.d, basePath->lambda);
+            }
+        }
+
+        if (offsetPathLength > 0 && basePath->lambda.SecondaryTerminated())
+            offsetPath->lambda.TerminateSecondary();
+        return {offsetPathLength > 0 ? offsetPath->lambda : basePath->lambda,
+                Lg * basePath->cameraWeight};
+    };
+
+    std::tie(result.lambdaGx0, result.Lgx0) = trace_offset_path({-1, 0});
+    std::tie(result.lambdaGx1, result.Lgx1) = trace_offset_path({1, 0});
+    std::tie(result.lambdaGy0, result.Lgy0) = trace_offset_path({0, -1});
+    std::tie(result.lambdaGy1, result.Lgy1) = trace_offset_path({0, 1});
 
     return true;
 }
@@ -2680,6 +2829,11 @@ std::string GDPTIntegrator::ToString() const {
 std::unique_ptr<GDPTIntegrator> GDPTIntegrator::Create(
     const ParameterDictionary &parameters, Camera camera, Sampler sampler,
     Primitive aggregate, std::vector<Light> lights, const FileLoc *loc) {
+    // realistic cameras give non-constant sample PDFs for camera rays, which
+    // GDPTIntegrator cannot handle
+    if (camera.Is<RealisticCamera>())
+        ErrorExit(loc, "GDPTIntegrator does not work with RealisticCamera.");
+    // we need a specific type of film to hold sampled gradient values
     if (!camera.GetFilm().Is<GradientBufferFilm>())
         ErrorExit(loc, "GDPTIntegrator must be used with a GradientBufferFilm film.");
 
