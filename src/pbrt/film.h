@@ -546,7 +546,7 @@ class GradientBufferFilm : public FilmBase {
     PBRT_CPU_GPU
     void AddSample(Point2i, SampledSpectrum, const SampledWavelengths &,
                    const VisibleSurface *, Float) {
-        assert(false && "GradientBufferFilm::AddSample called");
+        CHECK(false && "GradientBufferFilm::AddSample called");
     }
 
     void AddGradientSample(const SampledGradient &sample) {
@@ -589,7 +589,7 @@ class GradientBufferFilm : public FilmBase {
 
     PBRT_CPU_GPU
     void AddSplat(Point2f, SampledSpectrum, const SampledWavelengths &) {
-        assert(false && "GradientBufferFilm::AddSplat called");
+        CHECK(false && "GradientBufferFilm::AddSplat called");
     }
 
     void WriteImage(ImageMetadata metadata, Float);

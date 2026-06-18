@@ -1115,13 +1115,10 @@ Image GradientBufferFilm::GetImage(ImageMetadata *metadata, Float) {
 
         auto transform_and_clamp = [this, &nClamped](RGB &rgb) {
             rgb = outputRGBFromSensorRGB * rgb;
-            if (std::max({rgb.r, rgb.g, rgb.b}) > 65504) {
-                if (rgb.r > 65504)
-                    rgb.r = 65504;
-                if (rgb.g > 65504)
-                    rgb.g = 65504;
-                if (rgb.b > 65504)
-                    rgb.b = 65504;
+            if (std::max({std::abs(rgb.r), std::abs(rgb.g), std::abs(rgb.b)}) > 65504) {
+                rgb.r = std::clamp(rgb.r, -65504.f, 65504.f);
+                rgb.g = std::clamp(rgb.g, -65504.f, 65504.f);
+                rgb.b = std::clamp(rgb.b, -65504.f, 65504.f);
                 ++nClamped;
             }
         };
