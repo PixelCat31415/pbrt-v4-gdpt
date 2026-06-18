@@ -1107,10 +1107,10 @@ Image GradientBufferFilm::GetImage(ImageMetadata *metadata, Float) {
         bool is_y_border = (p.y == pixelBounds.pMax.y - 1);
         RGB rgb{normalized_rgb(pixels[p].f)};
         RGB gx{is_x_border ? RGB{}
-                           : (normalized_rgb(pixels[p].gx1) +
+                           : (-normalized_rgb(pixels[p].gx1) +
                               normalized_rgb(pixels[p + Point2i(1, 0)].gx0))};
         RGB gy{is_y_border ? RGB{}
-                           : (normalized_rgb(pixels[p].gy1) +
+                           : (-normalized_rgb(pixels[p].gy1) +
                               normalized_rgb(pixels[p + Point2i(0, 1)].gy0))};
 
         auto transform_and_clamp = [this, &nClamped](RGB &rgb) {

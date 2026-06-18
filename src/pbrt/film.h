@@ -533,10 +533,11 @@ class SpectralFilm : public FilmBase {
 class GradientBufferFilm : public FilmBase {
   public:
     struct SampledGradient {
+        // g[xy][01]: contribution of [base path - offset path]
         Point2i pFilm;
-        SampledWavelengths lambda;
-        SampledSpectrum L, Lx0, Lx1, Ly0, Ly1;
-        Float wf, wgx0, wgx1, wgy0, wgy1;
+        Float weight;
+        SampledWavelengths lambdaBase, lambdaGx0, lambdaGx1, lambdaGy0, lambdaGy1;
+        SampledSpectrum L, Lgx0, Lgx1, Lgy0, Lgy1;
     };
 
     PBRT_CPU_GPU
@@ -549,9 +550,9 @@ class GradientBufferFilm : public FilmBase {
     }
 
     void AddGradientSample(const SampledGradient &sample) {
-        const SampledWavelengths &lambda = sample.lambda;
-        auto accum_sample = [this, &lambda](const SampledSpectrum &L, Float weight,
-                                            PixelChannel &pixel) {
+        auto accum_sample = [this, weight = sample.weight](
+                                const SampledWavelengths &lambda,
+                                const SampledSpectrum &L, PixelChannel &pixel) {
             RGB rgb = sensor->ToSensorRGB(L, lambda);
             for (int c = 0; c < 3; ++c)
                 pixel.rgbSum[c] += weight * rgb[c];
@@ -560,11 +561,11 @@ class GradientBufferFilm : public FilmBase {
 
         DCHECK(InsideExclusive(sample.pFilm, pixelBounds));
         Pixel &pixel = pixels[sample.pFilm];
-        accum_sample(sample.L, sample.wf, pixel.f);
-        accum_sample(sample.L - sample.Lx0, sample.wgx0, pixel.gx0);
-        accum_sample(sample.Lx1 - sample.L, sample.wgx1, pixel.gx1);
-        accum_sample(sample.L - sample.Ly0, sample.wgy0, pixel.gy0);
-        accum_sample(sample.Ly1 - sample.L, sample.wgy1, pixel.gy1);
+        accum_sample(sample.lambdaBase, sample.L, pixel.f);
+        accum_sample(sample.lambdaGx0, sample.Lgx0, pixel.gx0);
+        accum_sample(sample.lambdaGx1, sample.Lgx1, pixel.gx1);
+        accum_sample(sample.lambdaGy0, sample.Lgy0, pixel.gy0);
+        accum_sample(sample.lambdaGy1, sample.Lgy1, pixel.gy1);
     }
 
     PBRT_CPU_GPU
