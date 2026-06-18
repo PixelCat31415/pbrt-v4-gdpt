@@ -2739,7 +2739,7 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
             }
 
             // shift path vertex
-            if (!vertb0.bs) {
+            if (!vertb0.bs || vertb0.bs->pdfIsProportional) {
                 break;
             } else if (vertb0.bs->IsSpecular()) {
                 // specular -- sample BxDF with the same branch, jacobian = 1
@@ -2751,7 +2751,7 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
                     pbrt::BxDFReflTransFlags::All, vertb0.bs->sampledBranch);
 
                 // failed to sample BxDF with the same branch -- not invertible
-                if (!verto0.bs)
+                if (!verto0.bs || verto0.bs->pdfIsProportional)
                     break;
 
                 verto1.beta *= verto0.bs->f *
