@@ -2768,6 +2768,8 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
                 // base vertex, jacobian = ratio of geometric term
                 Vector3f wo = -verto0.ray.d;
                 Vector3f wi = Normalize(vertb1.si->intr.p() - verto0.si->intr.p());
+                if (wi.HasNaN())
+                    break;
                 SampledSpectrum bsdf_f = verto0.bsdf.f(wo, wi);
                 Float bsdf_pdf = verto0.bsdf.PDF(wo, wi);
                 verto1.beta *=
@@ -2790,7 +2792,7 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
                 break;
             }
 
-            if (jacobian == 0 || IsNaN(jacobian) || IsInf(jacobian))
+            if (jacobian == 0 || !IsFinite(jacobian) || ratiop == 0 || !IsFinite(ratiop))
                 break;
             CHECK_GE(verto1.beta.y(offsetPath->lambda), 0.f);
             DCHECK(!IsInf(verto1.beta.y(offsetPath->lambda)));
