@@ -2474,6 +2474,10 @@ std::unique_ptr<BDPTIntegrator> BDPTIntegrator::Create(
                                             regularize);
 }
 
+STAT_PIXEL_RATIO("GDPT/Invertible Shifts", invShifts, totalInvShifts);
+STAT_PIXEL_RATIO("GDPT/Reconnected Shifts", reconnectedShifts, totalReconnectedShifts);
+STAT_PIXEL_RATIO("GDPT/Extra Intersection Tests", extraIntersectionTests, totalIntersectionTests);
+
 GDPTIntegrator::GDPTIntegrator(int maxDepth, Camera camera, Sampler sampler,
                                Primitive aggregate, std::vector<Light> lights)
     : ImageTileIntegrator(camera, sampler, aggregate, lights),
@@ -2629,6 +2633,7 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
 
         basePath->length++;
         vert0.si = Intersect(vert0.ray);
+        totalIntersectionTests++;
         if (!vert0.si) {
             for (const auto &light : infiniteLights)
                 result.L += vert0.beta * light.Le(vert0.ray, basePath->lambda);
@@ -2694,7 +2699,12 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
             if (!verto0.beta)
                 break;
 
-            verto0.si = reconnected ? vertb0.si : Intersect(verto0.ray);
+            if (reconnected) {
+                verto0.si = vertb0.si;
+            } else {
+                verto0.si = Intersect(verto0.ray);
+                extraIntersectionTests++;
+            }
             if (static_cast<bool>(vertb0.si) != static_cast<bool>(verto0.si)) {
                 // one of the paths found intersection while the other does not -- not
                 // invertible
@@ -2705,6 +2715,10 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
             // both paths reach here without rejection -- invertible
             Float base_weight = 1.f / (1.f + ratiop * jacobian);
             Float offset_weight = base_weight * jacobian;
+            invShifts++;
+            totalInvShifts++;
+            reconnectedShifts += static_cast<int>(reconnected);
+            totalReconnectedShifts++;
             if (!vertb0.si) {
                 for (const auto &light : infiniteLights)
                     Lg += (base_weight * vertb0.beta *
@@ -2822,6 +2836,8 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
             } else {
                 Lg += vertb0.beta * vertb0.si->intr.Le(-vertb0.ray.d, basePath->lambda);
             }
+            totalInvShifts++;
+            totalReconnectedShifts++;
         }
 
         if (offsetPathLength > 0 && basePath->lambda.SecondaryTerminated())
