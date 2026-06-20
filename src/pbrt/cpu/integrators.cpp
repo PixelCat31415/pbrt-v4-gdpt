@@ -2677,6 +2677,7 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
         Float jacobian = 1.f;
         // ratiop = p(y) / p(x). used for MIS weight = 1 / (1 + ratiop * |jacobian|)
         Float ratiop = 1.f;
+        bool reconnected = false;
         SampledSpectrum Lg(0.f);
 
         // for each path prefix,
@@ -2693,7 +2694,7 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
             if (!verto0.beta)
                 break;
 
-            verto0.si = Intersect(verto0.ray);
+            verto0.si = reconnected ? vertb0.si : Intersect(verto0.ray);
             if (static_cast<bool>(vertb0.si) != static_cast<bool>(verto0.si)) {
                 // one of the paths found intersection while the other does not -- not
                 // invertible
@@ -2725,8 +2726,10 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
             PathVertex &verto1 = (*offsetPath)[offsetPath->length];
             verto1.beta = verto0.beta;
 
-            verto0.bsdf = verto0.si->intr.GetBSDF(verto0.ray, offsetPath->lambda, camera,
-                                                  scratchBuffer, sampler);
+            verto0.bsdf = reconnected
+                              ? vertb0.bsdf
+                              : verto0.si->intr.GetBSDF(verto0.ray, offsetPath->lambda,
+                                                        camera, scratchBuffer, sampler);
             // base/offset paths do not land on the same BxDF type -- not invertible
             if (static_cast<bool>(vertb0.bsdf) != static_cast<bool>(verto0.bsdf) ||
                 vertb0.bsdf.GetBxdfTag() != verto0.bsdf.GetBxdfTag())
@@ -2739,8 +2742,16 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
             }
 
             // shift path vertex
-            if (!vertb0.bs || vertb0.bs->pdfIsProportional) {
+            if (!vertb0.bs || (vertb0.bs->pdfIsProportional && !reconnected)) {
                 break;
+            } else if (reconnected) {
+                verto0.bs = vertb0.bs;
+                verto1.beta *= verto0.bs->f *
+                               AbsDot(verto0.bs->wi, verto0.si->intr.shading.n) /
+                               vertb0.bs->pdf;
+                verto1.specularBounce = verto0.bs->IsSpecular();
+                verto1.ray = verto0.si->intr.SpawnRay(verto0.bs->wi);
+                // ratiop, jacobian do not change
             } else if (vertb0.bs->IsSpecular()) {
                 // specular -- sample BxDF with the same branch, jacobian = 1
                 // random values for sampling should not matter here as we are not
@@ -2762,7 +2773,7 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
                 CHECK(verto1.specularBounce);
 
                 ratiop *= verto0.bs->pdf / vertb0.bs->pdf;
-                // jacobian *= 1
+                // jacobian does not change
             } else if (vertb1.si) {
                 // glossy/diffuse, next base vertex is not infinite -- connect to next
                 // base vertex, jacobian = ratio of geometric term
@@ -2780,6 +2791,9 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
                 // reconnection attempt blocked -- not invertible
                 if (!Unoccluded(verto0.si->intr, vertb1.si->intr))
                     break;
+                // two consecutive diffuse vertices -- reconnect to everything afterwards
+                if (!verto0.specularBounce)
+                    reconnected = true;
 
                 ratiop *= bsdf_pdf / vertb0.bs->pdf;
                 jacobian *= AbsDot(verto1.ray.d, vertb1.si->intr.n) /
