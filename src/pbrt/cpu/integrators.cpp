@@ -2476,12 +2476,15 @@ std::unique_ptr<BDPTIntegrator> BDPTIntegrator::Create(
 
 STAT_PIXEL_RATIO("GDPT/Invertible Shifts", invShifts, totalInvShifts);
 STAT_PIXEL_RATIO("GDPT/Reconnected Shifts", reconnectedShifts, totalReconnectedShifts);
-STAT_PIXEL_RATIO("GDPT/Extra Intersection Tests", extraIntersectionTests, totalIntersectionTests);
+STAT_PIXEL_RATIO("GDPT/Extra Intersection Tests", extraIntersectionTests,
+                 totalIntersectionTests);
 
-GDPTIntegrator::GDPTIntegrator(int maxDepth, Camera camera, Sampler sampler,
-                               Primitive aggregate, std::vector<Light> lights)
+GDPTIntegrator::GDPTIntegrator(int maxDepth, bool sampleLights, Camera camera,
+                               Sampler sampler, Primitive aggregate,
+                               std::vector<Light> lights)
     : ImageTileIntegrator(camera, sampler, aggregate, lights),
       maxDepth(maxDepth),
+      sampleLights(sampleLights),
       lightSampler(lights, Allocator()),
       gradFilm(*camera.GetFilm().Cast<GradientBufferFilm>()) {}
 
@@ -2560,6 +2563,8 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
 
         pstd::optional<ShapeIntersection> si = {};
         BSDF bsdf = {};
+        std::pair<Float, Point2f> uLight;
+        SampledSpectrum lightContribution = SampledSpectrum(0.f);
         pstd::optional<BSDFSample> bs = {};
     };
     struct Path {
@@ -2635,12 +2640,15 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
         vert0.si = Intersect(vert0.ray);
         totalIntersectionTests++;
         if (!vert0.si) {
-            for (const auto &light : infiniteLights)
-                result.L += vert0.beta * light.Le(vert0.ray, basePath->lambda);
+            if (!sampleLights || vert0.specularBounce)
+                for (const auto &light : infiniteLights)
+                    result.L += vert0.beta * light.Le(vert0.ray, basePath->lambda);
             break;
-        } else {
+        }
+        if (!sampleLights || vert0.specularBounce) {
             result.L += vert0.beta * vert0.si->intr.Le(-vert0.ray.d, basePath->lambda);
         }
+
         if (basePath->length > maxDepth)
             break;
 
@@ -2658,6 +2666,27 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
         }
 
         Vector3f wo = -vert0.ray.d;
+        if (sampleLights) {
+            Float uEmitter = sampler.Get1D();
+            Point2f uLiSample = sampler.Get2D();
+            vert0.uLight = {uEmitter, uLiSample};
+            pstd::optional<SampledLight> sampledLight = lightSampler.Sample(uEmitter);
+            if (sampledLight) {
+                pstd::optional<LightLiSample> ls =
+                    sampledLight->light.SampleLi(isect, uLiSample, basePath->lambda);
+                if (ls && ls->L && ls->pdf > 0) {
+                    Vector3f wi = ls->wi;
+                    SampledSpectrum f =
+                        vert0.bsdf.f(wo, wi) * AbsDot(wi, isect.shading.n);
+                    if (f && Unoccluded(isect, ls->pLight)) {
+                        vert0.lightContribution =
+                            (vert0.beta * f * ls->L) / (sampledLight->p * ls->pdf);
+                        result.L += vert0.lightContribution;
+                    }
+                }
+            }
+        }
+
         Float u = sampler.Get1D();
         vert0.bs = vert0.bsdf.Sample_f(wo, u, sampler.Get2D());
         if (!vert0.bs)
@@ -2696,7 +2725,7 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
         while (offsetPath) {
             const PathVertex &vertb0 = (*basePath)[offsetPath->length];
             PathVertex &verto0 = (*offsetPath)[offsetPath->length];
-            if (!verto0.beta)
+            if (!verto0.beta || !vertb0.beta)
                 break;
 
             if (reconnected) {
@@ -2720,20 +2749,22 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
             reconnectedShifts += static_cast<int>(reconnected);
             totalReconnectedShifts++;
             if (!vertb0.si) {
-                for (const auto &light : infiniteLights)
-                    Lg += (base_weight * vertb0.beta *
-                               light.Le(vertb0.ray, basePath->lambda) -
-                           offset_weight * verto0.beta *
-                               light.Le(verto0.ray, offsetPath->lambda));
+                if (!sampleLights || verto0.specularBounce)
+                    for (const auto &light : infiniteLights)
+                        Lg += (base_weight * vertb0.beta *
+                                   light.Le(vertb0.ray, basePath->lambda) -
+                               offset_weight * verto0.beta *
+                                   light.Le(verto0.ray, offsetPath->lambda));
                 break;
-            } else {
+            }
+            if (!sampleLights || verto0.specularBounce) {
                 Lg += (base_weight * vertb0.beta *
                            vertb0.si->intr.Le(-vertb0.ray.d, basePath->lambda) -
                        offset_weight * verto0.beta *
                            verto0.si->intr.Le(-verto0.ray.d, offsetPath->lambda));
             }
 
-            if (offsetPath->length > maxDepth || offsetPath->length >= basePath->length)
+            if (offsetPath->length > maxDepth)
                 break;
 
             const PathVertex &vertb1 = (*basePath)[offsetPath->length];
@@ -2745,9 +2776,11 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
                               : verto0.si->intr.GetBSDF(verto0.ray, offsetPath->lambda,
                                                         camera, scratchBuffer, sampler);
             // base/offset paths do not land on the same BxDF type -- not invertible
-            if (static_cast<bool>(vertb0.bsdf) != static_cast<bool>(verto0.bsdf) ||
-                vertb0.bsdf.GetBxdfTag() != verto0.bsdf.GetBxdfTag())
+            if (static_cast<bool>(vertb0.bsdf) != static_cast<bool>(verto0.bsdf)) {
+                if (sampleLights)
+                    Lg += vertb0.lightContribution;
                 break;
+            }
             if (!verto0.bsdf) {
                 verto1.specularBounce = true;
                 verto1.ray = verto0.ray;
@@ -2755,8 +2788,42 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
                 continue;
             }
 
+            // given uEmitter and uLiSample, lights sampling gives zero contribution when:
+            // - lightSampler.Sample failed
+            // - sampledLight->light.SampleLi failed or gave 0 PDF
+            // - BSDF gave 0 PDF
+            // - sampled point was occluded
+            // the shift function is always invertible and jacobian *= 1 because we copied
+            // the two random variables
+            if (sampleLights) {
+                Vector3f wo = -verto0.ray.d;
+                Float uEmitter;
+                Point2f uLiSample;
+                std::tie(uEmitter, uLiSample) = vertb0.uLight;
+                pstd::optional<SampledLight> sampledLight = lightSampler.Sample(uEmitter);
+                SampledSpectrum offsetContribution{0.f};
+                if (sampledLight) {
+                    const auto &isect = verto0.si->intr;
+                    pstd::optional<LightLiSample> ls = sampledLight->light.SampleLi(
+                        isect, uLiSample, offsetPath->lambda);
+                    if (ls && ls->L && ls->pdf > 0) {
+                        Vector3f wi = ls->wi;
+                        SampledSpectrum f =
+                            verto0.bsdf.f(wo, wi) * AbsDot(wi, isect.shading.n);
+                        if (f && Unoccluded(isect, ls->pLight)) {
+                            offsetContribution =
+                                (verto0.beta * f * ls->L) / (sampledLight->p * ls->pdf);
+                        }
+                    }
+                }
+                base_weight = 1.f / (1.f + ratiop * jacobian);
+                offset_weight = base_weight * jacobian;
+                Lg += (base_weight * vertb0.lightContribution -
+                       offset_weight * offsetContribution);
+            }
+
             // shift path vertex
-            if (!vertb0.bs || (vertb0.bs->pdfIsProportional && !reconnected)) {
+            if (!vertb0.bs) {
                 break;
             } else if (reconnected) {
                 verto0.bs = vertb0.bs;
@@ -2766,6 +2833,9 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
                 verto1.specularBounce = verto0.bs->IsSpecular();
                 verto1.ray = verto0.si->intr.SpawnRay(verto0.bs->wi);
                 // ratiop, jacobian do not change
+            } else if (vertb0.bsdf.GetBxdfTag() != verto0.bsdf.GetBxdfTag() ||
+                       vertb0.bs->pdfIsProportional) {
+                break;
             } else if (vertb0.bs->IsSpecular()) {
                 // specular -- sample BxDF with the same branch, jacobian = 1
                 // random values for sampling should not matter here as we are not
@@ -2829,15 +2899,21 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
         // paths in basePath longer than offsetPath -- not invertible
         int offsetPathLength = offsetPath ? offsetPath->length : 0;
         for (int depth = offsetPathLength; depth < basePath->length; depth++) {
-            const PathVertex &vertb0 = (*basePath)[depth];
-            if (!vertb0.si) {
-                for (const auto &light : infiniteLights)
-                    Lg += vertb0.beta * light.Le(vertb0.ray, basePath->lambda);
-            } else {
-                Lg += vertb0.beta * vertb0.si->intr.Le(-vertb0.ray.d, basePath->lambda);
-            }
             totalInvShifts++;
             totalReconnectedShifts++;
+            const PathVertex &vertb0 = (*basePath)[depth];
+            if (!vertb0.si) {
+                if (!sampleLights || vertb0.specularBounce)
+                    for (const auto &light : infiniteLights)
+                        Lg += vertb0.beta * light.Le(vertb0.ray, basePath->lambda);
+                break;
+            }
+            if (!sampleLights || vertb0.specularBounce) {
+                Lg += vertb0.beta * vertb0.si->intr.Le(-vertb0.ray.d, basePath->lambda);
+            }
+            if (sampleLights && vertb0.lightContribution) {
+                Lg += vertb0.lightContribution;
+            }
         }
 
         if (offsetPathLength > 0 && basePath->lambda.SecondaryTerminated())
@@ -2855,7 +2931,8 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
 }
 
 std::string GDPTIntegrator::ToString() const {
-    return StringPrintf("[ GDPTIntegrator maxDepth: %d ]", maxDepth);
+    return StringPrintf("[ GDPTIntegrator maxDepth: %d sampleLights: %s ]", maxDepth,
+                        sampleLights);
 }
 
 std::unique_ptr<GDPTIntegrator> GDPTIntegrator::Create(
@@ -2870,7 +2947,9 @@ std::unique_ptr<GDPTIntegrator> GDPTIntegrator::Create(
         ErrorExit(loc, "GDPTIntegrator must be used with a GradientBufferFilm film.");
 
     int maxDepth = parameters.GetOneInt("maxdepth", 5);
-    return std::make_unique<GDPTIntegrator>(maxDepth, camera, sampler, aggregate, lights);
+    bool sampleLights = parameters.GetOneBool("samplelights", true);
+    return std::make_unique<GDPTIntegrator>(maxDepth, sampleLights, camera, sampler,
+                                            aggregate, lights);
 }
 
 STAT_PERCENT("Integrator/Acceptance rate", acceptedMutations, totalMutations);

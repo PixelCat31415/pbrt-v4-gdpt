@@ -380,8 +380,8 @@ class BDPTIntegrator : public RayIntegrator {
 
 class GDPTIntegrator : public ImageTileIntegrator {
   public:
-    GDPTIntegrator(int maxDepth, Camera camera, Sampler sampler, Primitive aggregate,
-                   std::vector<Light> lights);
+    GDPTIntegrator(int maxDepth, bool sampleLights, Camera camera, Sampler sampler,
+                   Primitive aggregate, std::vector<Light> lights);
 
     void EvaluatePixelSample(Point2i pPixel, int sampleIndex, Sampler sampler,
                              ScratchBuffer &scratchBuffer) final;
@@ -400,8 +400,9 @@ class GDPTIntegrator : public ImageTileIntegrator {
                                ScratchBuffer &scratchBuffer,
                                GradientBufferFilm::SampledGradient &result) const;
 
-    //  compared to SimplePathIntegrator, we fix sampleLights = false, sampleBSDF = true
+    // compared to SimplePathIntegrator, we fix sampleBSDF = true
     int maxDepth;
+    bool sampleLights;
     UniformLightSampler lightSampler;
     // we need a specific type of film, so we hold its reference to do less casting / type
     // checking. the camera (which owns the film) should have longer lifetime than the
