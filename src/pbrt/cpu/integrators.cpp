@@ -2862,7 +2862,8 @@ bool GDPTIntegrator::EvaluatePathsRadiance(
                 // glossy/diffuse, next base vertex is not infinite -- connect to next
                 // base vertex, jacobian = ratio of geometric term
                 Vector3f wo = -verto0.ray.d;
-                Vector3f wi = Normalize(vertb1.si->intr.p() - verto0.si->intr.p());
+                Ray reconnectRay = verto0.si->intr.SpawnRayTo(vertb1.si->intr);
+                Vector3f wi = Normalize(reconnectRay.d);
                 if (wi.HasNaN())
                     break;
                 SampledSpectrum bsdf_f = verto0.bsdf.f(wo, wi);
